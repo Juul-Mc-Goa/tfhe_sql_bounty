@@ -1,0 +1,1 @@
+SELECT * FROM table_1 WHERE column_2_name = true AND column_1_name = 1 AND column_3_name = 3
