@@ -1,3 +1,3 @@
-column_1_name:uint32,colum_2_name:bool,column_3_name:string
+column_1_name:uint32,column_2_name:bool,column_3_name:string
 0,true,"first line"
 123,false,"some other line"
