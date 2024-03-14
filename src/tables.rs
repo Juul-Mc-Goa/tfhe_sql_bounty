@@ -3,6 +3,7 @@ use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 use tfhe::prelude::*;
 use tfhe::{ClientKey, FheUint32};
 
+/// An enum with one variant for each possible type of a cell's content.
 #[derive(Debug, Clone)]
 pub enum CellType {
     Bool,
@@ -25,6 +26,7 @@ impl CellType {
     }
 }
 
+/// Transforms a `&str` to a `CellType`. Typically used when reading table headers.
 impl From<&str> for CellType {
     fn from(str_type: &str) -> Self {
         match str_type {
@@ -41,6 +43,7 @@ impl From<&str> for CellType {
     }
 }
 
+/// Holds the content of a given cell.
 #[derive(Clone, Debug)]
 pub enum CellContent {
     Bool(bool),
@@ -53,6 +56,7 @@ pub enum CellContent {
     ShortString(String),
 }
 
+/// Returns the type of a given cell content.
 impl From<&CellContent> for CellType {
     fn from(content: &CellContent) -> Self {
         match content {
@@ -69,8 +73,18 @@ impl From<&CellContent> for CellType {
 }
 
 impl CellContent {
-    fn len(&self) -> usize {
-        CellType::from(self).len()
+    /// Returns a `String` representation of its content.
+    pub fn to_string(&self) -> String {
+        match self {
+            Self::Bool(b) => format!("{b}"),
+            Self::U8(u) => format!("{u}"),
+            Self::U16(u) => format!("{u}"),
+            Self::U32(u) => format!("{u}"),
+            Self::I8(i) => format!("{i}"),
+            Self::I16(i) => format!("{i}"),
+            Self::I32(i) => format!("{i}"),
+            Self::ShortString(s) => s.clone(),
+        }
     }
     /// Encode every cell content as a vector of `u32`s. In every cases other than
     /// `ShortString`, it has a length of 1.
@@ -112,6 +126,7 @@ impl CellContent {
     }
 }
 
+/// Parses a `&str` into a `CellContent` of type `CellType`.
 impl From<(&str, &CellType)> for CellContent {
     fn from(arg: (&str, &CellType)) -> Self {
         match arg.1 {
@@ -127,12 +142,13 @@ impl From<(&str, &CellType)> for CellContent {
     }
 }
 
+/// A struct holding a vector of tuples `(column_identifier, data_type)`.
 #[derive(Debug)]
 pub struct TableHeaders(pub Vec<(String, CellType)>);
 
 impl TableHeaders {
     /// Given a column identifier, returns the index of its first element. Each element is of type
-    /// u8, so an column of type u32 has 4 associated indices, a column of type ShortString has 32, etc.
+    /// u32, so an column of type u32 has 1 associated index, a column of type ShortString has 8, etc.
     pub fn index_of(&self, column: String) -> Result<u8, String> {
         let mut result: u8 = 0;
         for (label, cell_type) in self.0.iter() {
@@ -153,15 +169,17 @@ impl TableHeaders {
     }
 }
 
+/// A representation of a SQL table.
 #[derive(Debug)]
 pub struct Table {
     pub headers: TableHeaders,
     pub content: Vec<Vec<CellContent>>,
 }
 
+/// A vector of tuples `(table_name, table)`.
 pub struct Tables(pub Vec<(String, Table)>);
 
-fn read_header(path: PathBuf) -> TableHeaders {
+fn read_headers(path: PathBuf) -> TableHeaders {
     let header = read_to_string(path)
         .unwrap()
         .lines()
@@ -193,7 +211,7 @@ pub fn load_tables(path: PathBuf) -> Result<Tables, Box<dyn std::error::Error>> 
             .file_stem()
             .and_then(|f| f.to_str().map(|os_str| String::from(os_str)))
             .expect("file name error {table_path}");
-        let headers = read_header(table_path.clone());
+        let headers = read_headers(table_path.clone());
         let mut rdr = csv::Reader::from_path(table_path)?;
         let mut content: Vec<Vec<CellContent>> = Vec::new();
         for entry in rdr.records() {

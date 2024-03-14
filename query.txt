@@ -1,1 +1,1 @@
-SELECT * FROM table_1 WHERE (column_2_name = true AND column_3_name = "first_line") OR column_1_name = 0
+SELECT * FROM table_1 WHERE NOT ((column_2_name = true AND column_3_name = "first_line") OR column_1_name = 0)

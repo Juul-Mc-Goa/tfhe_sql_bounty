@@ -30,6 +30,20 @@ impl From<BinaryOperator> for ComparisonOp {
     }
 }
 
+impl ComparisonOp {
+    fn to_string(&self) -> String {
+        match self {
+            ComparisonOp::Equal => "=",
+            ComparisonOp::NotEqual => "!=",
+            ComparisonOp::LessEqual => "<=",
+            ComparisonOp::GreaterThan => ">",
+            ComparisonOp::LessThan => "<",
+            ComparisonOp::GreaterEqual => ">=",
+        }
+        .into()
+    }
+}
+
 /// An atomic condition of the form `column OP value`:
 /// - the `String` contains the identifier of the column being tested,
 /// - the `CellContent` contains the value against which it is tested.
@@ -40,7 +54,7 @@ pub struct AtomicCondition {
     pub value: CellContent,
 }
 
-type EncryptedAtom = (FheUint8, FheUint32, FheBool, FheBool);
+pub type EncryptedAtom = (FheUint8, FheUint32, FheBool, FheBool);
 
 impl AtomicCondition {
     /// Extracts the type of a cell (int, unsigned int, or short string).
@@ -59,6 +73,14 @@ impl AtomicCondition {
             ComparisonOp::GreaterEqual => ComparisonOp::LessThan,
         };
         AtomicCondition { ident, op, value }
+    }
+    fn to_string(&self) -> String {
+        format!(
+            "{} {} {}",
+            self.ident.to_string(),
+            self.op.to_string(),
+            self.value.to_string()
+        )
     }
     /// Encodes itself into an `EncryptedAtom`, then encrypts the resulting vector.
     /// # Inputs:
@@ -150,6 +172,8 @@ pub enum WhereSyntaxTree {
     Or(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
 }
 
+pub type EncryptedSyntaxTree = Vec<(EncryptedAtom, FheBool)>;
+
 /// Builds a `WhereSyntaxTree` from a `sqlparser::Expr`. This is used to discard all
 /// unnecessary data that comes along a `sqlparser::Expr`.
 impl From<Expr> for WhereSyntaxTree {
@@ -194,6 +218,38 @@ impl From<Expr> for WhereSyntaxTree {
 }
 
 impl WhereSyntaxTree {
+    /// Stringifies a `WhereSyntaxTree` for debugging purposes
+    fn to_string_lines(&self) -> Vec<String> {
+        let indent_closure =
+            |v: Vec<String>| v.iter().map(|s| format!("  {s}")).collect::<Vec<String>>();
+        match self {
+            WhereSyntaxTree::Atom(a) => vec![a.to_string()],
+            WhereSyntaxTree::And(a, b) => {
+                let mut result = vec![String::from("And")];
+                let mut left: Vec<String> = indent_closure(a.to_string_lines());
+                let mut right: Vec<String> = indent_closure(b.to_string_lines());
+                result.append(&mut left);
+                result.append(&mut right);
+                result
+            }
+            WhereSyntaxTree::Or(a, b) => {
+                let mut result = vec![String::from("Or")];
+                let mut left: Vec<String> = indent_closure(a.to_string_lines());
+                let mut right: Vec<String> = indent_closure(b.to_string_lines());
+                result.append(&mut left);
+                result.append(&mut right);
+                result
+            }
+            WhereSyntaxTree::Not(a) => {
+                let mut result = a.to_string_lines();
+                result[0] = format!("Not {}", &result[0]);
+                result
+            }
+        }
+    }
+    pub fn to_string(&self) -> String {
+        self.to_string_lines().join("\n")
+    }
     /// Creates a new syntax tree where the `AND` operators are at the bottom of the tree.
     /// This uses the usual distributivity relation `(a OR b) AND c = (a AND c) OR (b AND c)`.
     /// *WARNING* This method assumes there is no `NOT` operator in the syntax tree. Make sure to
@@ -293,11 +349,7 @@ impl WhereSyntaxTree {
     /// - `op == false`: apply `OR` operator.
     /// The final element's `op` is ignored.
     /// *WARNING* This method assumes that the syntax tree is in conjunctive normal form.
-    pub fn encrypt(
-        &self,
-        client_key: &ClientKey,
-        headers: &TableHeaders,
-    ) -> Vec<(EncryptedAtom, FheBool)> {
+    pub fn encrypt(&self, client_key: &ClientKey, headers: &TableHeaders) -> EncryptedSyntaxTree {
         match self {
             WhereSyntaxTree::Atom(a) => a
                 .encrypt(client_key, headers)
