@@ -8,14 +8,29 @@ use tfhe::shortint::PBSParameters;
 use tfhe::{generate_keys, set_server_key, ClientKey, ConfigBuilder, FheUint32};
 
 mod query;
-mod tables;
+mod tables {
+    //! This module holds various types related to the handling of SQL tables.
+    //! They are represented as a vector of entries, which are themselves just a
+    //! vector of `CellContent`s, which hold each value in that table.
+    //!
+    //! The main function is `load_tables`, which reads a database from disk.
+    //!
+    //! The type `CellContent` is also used in the `query` module, so some methods are defined
+    //! to encrypt a `CellContent` with a `ClientKey`.
+}
 
 use query::WhereSyntaxTree;
 use tables::*;
 
 fn parse_query(path: PathBuf) -> Statement {
     let dialect = GenericDialect {};
-    let str_query = read_to_string(path).unwrap();
+    let str_query = read_to_string(path.clone()).expect(
+        format!(
+            "Could not load query file at {}",
+            path.to_str().expect("invalid Unicode for {path:?}")
+        )
+        .as_str(),
+    );
     let ast = Parser::parse_sql(&dialect, &str_query).unwrap();
     ast[0].clone()
 }
@@ -54,12 +69,6 @@ fn default_cpu_parameters() -> PBSParameters {
 /// the clear DB system you use for comparison
 // fn decrypt_result(clientk_key: &ClientKey, result: &EncryptedResult) -> String;
 
-fn decrypt_vec(v: Vec<FheUint32>, client_key: &ClientKey) -> Vec<u32> {
-    v.into_iter()
-        .map(|encrypted_u8| encrypted_u8.decrypt(client_key))
-        .collect::<Vec<_>>()
-}
-
 fn vec_u32_to_string(v: Vec<u32>) -> String {
     let mut vec_u8 = Vec::<u8>::new();
     for u in v {
@@ -87,53 +96,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     // Key generation
-    let (client_key, _server_keys) = generate_keys(config);
+    let (client_key, server_keys) = generate_keys(config);
 
-    // let clear_a = 1344u32;
-    // let clear_b = 5u32;
-    // let clear_c = 7u8;
+    // On the server side:
+    set_server_key(server_keys);
 
-    // // Encrypting the input data using the (private) client_key
-    // // FheUint32: Encrypted equivalent to u32
-    // let mut encrypted_a = FheUint32::try_encrypt(clear_a, &client_key)?;
-    // let encrypted_b = FheUint32::try_encrypt(clear_b, &client_key)?;
-
-    // // FheUint8: Encrypted equivalent to u8
-    // let encrypted_c = FheUint8::try_encrypt(clear_c, &client_key)?;
-
-    // // On the server side:
-    // set_server_key(server_keys);
-
-    // // Clear equivalent computations: 1344 * 5 = 6720
-    // let encrypted_res_mul = &encrypted_a * &encrypted_b;
-
-    // // Clear equivalent computations: 1344 >> 5 = 42
-    // encrypted_a = &encrypted_res_mul >> &encrypted_b;
-
-    // // Clear equivalent computations: let casted_a = a as u8;
-    // let casted_a: FheUint8 = encrypted_a.cast_into();
-
-    // // Clear equivalent computations: min(42, 7) = 7
-    // let encrypted_res_min = &casted_a.min(&encrypted_c);
-
-    // // Operation between clear and encrypted data:
-    // // Clear equivalent computations: 7 & 1 = 1
-    // let encrypted_res = encrypted_res_min & 1_u8;
-
-    // // Decrypting on the client side:
-    // let clear_res: u8 = encrypted_res.decrypt(&client_key);
-    // assert_eq!(clear_res, 1_u8);
     let query_path = PathBuf::from("query.txt");
     let query = build_where_syntax_tree(parse_query(query_path));
     let cnf = query.conjuntive_normal_form();
 
-    println!("initial query: {query:?}");
-    println!("cnf query: {cnf:?}");
+    println!("initial query: \n{}\n", query.to_string());
+    println!("cnf query: \n{}\n", cnf.to_string());
 
     let db_dir_path = "db_dir";
     let tables = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
     let (_, table) = &tables.0[0];
-    println!("headers: {:?}", &table.headers);
+    println!("headers: {:?}\n", &table.headers);
 
     let encrypted_query = cnf.encrypt(&client_key, &table.headers);
 
