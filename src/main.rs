@@ -1,12 +1,13 @@
 use std::path::PathBuf;
-use tfhe::prelude::*;
-use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool};
+use tfhe::integer::{gen_keys_radix, BooleanBlock};
+use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
 
 mod query;
 mod tables;
 
 use query::*;
 use tables::*;
+use tfhe::shortint::Ciphertext;
 
 // fn encrypt_query(query: sqlparser::ast::Select) -> EncryptedQuery;
 
@@ -81,16 +82,11 @@ fn decode_u32_string(v: Vec<u32>) -> String {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = ConfigBuilder::default()
-        .enable_function_evaluation()
-        .build();
-
+    let number_of_blocks = 16;
     // KeyGen...
     // (insert Waifu here)
-    let (client_key, server_key) = generate_keys(config);
-
-    // Server-side
-    set_server_key(server_key);
+    let (mut client_key, mut server_key) =
+        gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, number_of_blocks);
 
     let query_path = PathBuf::from("query.txt");
     let query = build_where_syntax_tree(parse_query(query_path));
@@ -100,21 +96,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("dnf query: \n{}\n", dnf.to_string());
 
     let db_dir_path = "db_dir";
-    let tables = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
+    let tables =
+        load_tables(db_dir_path.into(), &server_key).expect("Failed to load DB at {db_dir_path}");
     let (_, table) = tables.0[0].clone();
     let headers = table.headers.clone();
     println!("headers: {:?}\n", headers);
 
     let encrypted_query = dnf.encrypt(&client_key, &headers);
-
     let encoded_table = EncodedTable::from(table);
 
     let ct_result = encoded_table.run_fhe_query(encrypted_query);
-
     let clear_result = ct_result
         .into_iter()
-        .map(|ct_bool: FheBool| ct_bool.decrypt(&client_key))
+        .map(|ct_bool: Ciphertext| client_key.decrypt_one_block(&ct_bool))
         .collect::<Vec<bool>>();
+
     println!("result: {clear_result:?}");
 
     Ok(())
@@ -123,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
 
-    use tfhe::{ClientKey, ServerKey};
+    use tfhe::ServerKey;
 
     use super::*;
     // use query::*;
@@ -168,9 +164,15 @@ mod tests {
         println!("result: {clear_result:?}");
     }
 
+    fn generate_keys() -> (ClientKey, ServerKey) {
+        gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
+    }
+
     #[test]
     fn encrypt_u8() {
-        let (client_key, _server_key) = keygen();
+        println!("generating FHE keys...");
+        let (client_key, _server_key) = generate_keys();
+        println!("DONE");
         let content: u8 = 5;
         let cell: CellContent = CellContent::U8(content);
         println!("encrypting content: {cell:?}...");
@@ -182,7 +184,9 @@ mod tests {
 
     #[test]
     fn encrypt_short_string() {
-        let (client_key, _server_key) = keygen();
+        println!("generating FHE keys...");
+        let (client_key, _server_key) = generate_keys();
+        println!("DONE");
         let content: String = "test".into();
         let cell: CellContent = CellContent::ShortString(content.clone());
         println!("encrypting content: {cell:?}...");
@@ -198,7 +202,9 @@ mod tests {
 
     #[test]
     fn encrypt_atomic_condition() {
-        let (client_key, _server_key) = keygen();
+        println!("generating FHE keys...");
+        let (client_key, _server_key) = generate_keys();
+        println!("DONE");
         let headers = TableHeaders(vec![(String::from("age"), CellType::U32)]);
         let condition: AtomicCondition = AtomicCondition {
             ident: "age".into(),
