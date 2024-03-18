@@ -1,7 +1,8 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
-use tfhe::prelude::*;
-use tfhe::{ClientKey, FheBool, FheUint2, FheUint32, ServerKey};
+use tfhe::integer::wopbs::WopbsKey;
+use tfhe::integer::{ClientKey, IntegerCiphertext, RadixCiphertext, ServerKey};
+use tfhe::shortint::Ciphertext;
 
 use crate::{EncryptedAtom, EncryptedSyntaxTree};
 
@@ -126,10 +127,10 @@ impl CellContent {
     }
     /// Encrypts everything as a FheUint32, except `ShortString` which is stored as a vector
     /// of eight `FheUint32`s.
-    pub fn encrypt(&self, client_key: &ClientKey) -> Vec<FheUint32> {
+    pub fn encrypt(&self, client_key: &ClientKey) -> Vec<RadixCiphertext> {
         self.encode()
             .iter()
-            .map(|u| FheUint32::encrypt(*u, client_key))
+            .map(|u| client_key.encrypt_radix(u.clone(), 16))
             .collect::<Vec<_>>()
     }
 }
@@ -207,12 +208,20 @@ impl From<Table> for EncodedTable {
 }
 
 impl EncodedTable {
-    fn run_query_on_entry(&self, entry: &Vec<u32>, query: &EncryptedSyntaxTree) -> FheBool {
+    fn run_query_on_entry(
+        &self,
+        entry: &Vec<u32>,
+        query: &EncryptedSyntaxTree,
+        server_key: ServerKey,
+        wopbs_key: WopbsKey,
+    ) -> Ciphertext {
         if query.is_empty() {
-            return FheBool::encrypt_trivial(true);
+            return server_key.create_trivial_radix(1, 1);
         }
         let entry_length = entry.len();
         // use PBS to map an encrypted index to an encrypted value, via the `map` method
+        // TODO use WopbsKey::generate_lut_radix()
+        // REVIEW generate_lut_radix takes a ciphertext and a fn as inputs ??
         let f = |u: u64| -> u64 {
             let v = u as usize;
             if v < entry_length {
@@ -221,12 +230,42 @@ impl EncodedTable {
                 0
             }
         };
-        let compute_atom = |current_val: FheUint32, encrypted_atom: &EncryptedAtom| {
-            let (_, val, is_leq, negate) = encrypted_atom.clone();
-            FheUint2::cast_from(is_leq & current_val.lt(val.clone()))
-                + FheUint2::cast_from(current_val.eq(val))
-                + FheUint2::cast_from(negate)
+        // convenience closure for adding bools
+        let add_bool = |b1: Ciphertext, b2: Ciphertext| -> Ciphertext {
+            server_key
+                .unchecked_add_parallelized(
+                    &RadixCiphertext::from_blocks(vec![b1]),
+                    &RadixCiphertext::from_blocks(vec![b2]),
+                )
+                .blocks()[0]
+                .clone()
         };
+        // convenience closure for multiplying bools
+        let mul_bool = |b1: Ciphertext, b2: Ciphertext| -> Ciphertext {
+            server_key
+                .unchecked_mul_parallelized(
+                    &RadixCiphertext::from_blocks(vec![b1]),
+                    &RadixCiphertext::from_blocks(vec![b2]),
+                )
+                .blocks()[0]
+                .clone()
+        };
+        // run an encrypted atomic query
+        let compute_atom = |current_val: RadixCiphertext, encrypted_atom: &EncryptedAtom| {
+            let (_, val, is_leq, negate) = encrypted_atom;
+
+            add_bool(
+                add_bool(
+                    mul_bool(
+                        is_leq.clone(),
+                        server_key.lt_parallelized(&current_val, val).into_inner(),
+                    ),
+                    server_key.eq_parallelized(&current_val, val).into_inner(),
+                ),
+                negate.clone(),
+            )
+        };
+
         // Use FheUint2 so that XOR becomes addition mod 2 (the MSB of the result
         // is ignored)
         let mut result_bool = FheUint2::encrypt_trivial(0u32);
@@ -267,17 +306,25 @@ impl EncodedTable {
         }
         (result_bool % 2).ne(&FheUint2::encrypt_trivial(0u16))
     }
-    pub fn run_fhe_query(&self, query: EncryptedSyntaxTree) -> Vec<FheBool> {
+    pub fn run_fhe_query(
+        &self,
+        query: EncryptedSyntaxTree,
+        server_key: ServerKey,
+    ) -> Vec<Ciphertext> {
         // iterate through each entry
         self.content
             .iter()
-            .map(|entry| self.run_query_on_entry(entry, &query))
+            .map(|entry| self.run_query_on_entry(entry, &query, server_key))
             .collect()
     }
 }
 
 /// A vector of tuples `(table_name, table)`.
-pub struct Tables(pub Vec<(String, Table)>);
+pub struct Tables {
+    pub server_key: ServerKey,
+    pub wopbs_key: WopbsKey,
+    pub tables: Vec<(String, Table)>,
+}
 
 fn read_headers(path: PathBuf) -> TableHeaders {
     let header = read_to_string(path)
@@ -304,11 +351,15 @@ fn read_headers(path: PathBuf) -> TableHeaders {
 /// - `db_dir`:
 ///   - `table_1.csv`
 ///   - `table_2.csv`
-pub fn load_tables(path: PathBuf) -> Result<Tables, Box<dyn std::error::Error>> {
+///   - ...
+pub fn load_tables(
+    path: PathBuf,
+    server_key: &ServerKey,
+) -> Result<Tables, Box<dyn std::error::Error>> {
     let mut result: Vec<(String, Table)> = Vec::new();
     let db_path = fs::read_dir(path).expect("Database path error: can't read directory {path}");
-    for table_direntry in db_path {
-        let table_path = table_direntry?.path();
+    for table_file in db_path {
+        let table_path = table_file?.path();
         let table_name: String = table_path
             .file_stem()
             .and_then(|f| f.to_str().map(|os_str| String::from(os_str)))

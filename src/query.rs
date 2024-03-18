@@ -9,8 +9,8 @@ use sqlparser::ast::{BinaryOperator, Expr, Ident, SetExpr, Statement, UnaryOpera
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
-use tfhe::prelude::*;
-use tfhe::{ClientKey, FheBool, FheUint32, FheUint8};
+use tfhe::integer::{ClientKey, RadixCiphertext};
+use tfhe::shortint::Ciphertext;
 
 /// Contains one variant for each operator allowed in a `WHERE` expression.
 #[derive(Clone, Debug)]
@@ -62,7 +62,12 @@ pub struct AtomicCondition {
     pub value: CellContent,
 }
 
-pub type EncryptedAtom = (FheUint8, FheUint32, FheBool, FheBool);
+/// An encrypted atom is the collection of:
+/// 1. a column identifier (encrypted u8),
+/// 2. a value (encrypted u32),
+/// 3. an encrypted boolean (encrypted integer mod 2) for identifying `op`,
+/// 4. an encrypted boolean (encrypted integer mod 2) for negating the atomic condition,
+pub type EncryptedAtom = (RadixCiphertext, RadixCiphertext, Ciphertext, Ciphertext);
 
 impl AtomicCondition {
     /// Extracts the type of a cell (int, unsigned int, or short string).
@@ -114,10 +119,10 @@ impl AtomicCondition {
                 };
                 for (i, ct_i) in self.value.encrypt(&client_key).into_iter().enumerate() {
                     result.push((
-                        FheUint8::encrypt(base_index + (i as u8), client_key),
+                        client_key.encrypt_radix(base_index + (i as u8), 4),
                         ct_i,
-                        FheBool::encrypt(false, client_key),
-                        FheBool::encrypt(is_negated, client_key),
+                        client_key.encrypt_one_block(0),
+                        client_key.encrypt_one_block(is_negated as u64),
                     ));
                 }
             }
@@ -133,10 +138,10 @@ impl AtomicCondition {
                     ComparisonOp::GreaterEqual => (true, true, u32_value - 1), // a >= b <=> not(a <= b-1)
                 };
                 result.push((
-                    FheUint8::encrypt(base_index, client_key),
-                    FheUint32::encrypt(val, client_key),
-                    FheBool::encrypt(op, client_key),
-                    FheBool::encrypt(is_negated, client_key),
+                    client_key.encrypt_radix(base_index, 4),
+                    client_key.encrypt_radix(val, 16),
+                    client_key.encrypt_one_block(op as u64),
+                    client_key.encrypt_one_block(is_negated as u64),
                 ));
             }
         }
@@ -181,7 +186,7 @@ pub enum WhereSyntaxTree {
 }
 
 /// A type alias for storing (the encryption of) a `WHERE` syntax tree in disjunctive normal form.
-pub type EncryptedSyntaxTree = Vec<(FheBool, EncryptedAtom)>;
+pub type EncryptedSyntaxTree = Vec<(Ciphertext, EncryptedAtom)>;
 
 /// Builds a `WhereSyntaxTree` from a `sqlparser::Expr`. This is used to discard all
 /// unnecessary data that comes along a `sqlparser::Expr`.
