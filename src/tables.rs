@@ -1,7 +1,9 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 use tfhe::prelude::*;
-use tfhe::{ClientKey, FheUint32};
+use tfhe::{ClientKey, FheBool, FheUint2, FheUint32, ServerKey};
+
+use crate::{EncryptedAtom, EncryptedSyntaxTree};
 
 /// An enum with one variant for each possible type of a cell's content.
 #[derive(Debug, Clone)]
@@ -89,25 +91,31 @@ impl CellContent {
     /// Encode every cell content as a vector of `u32`s. In every cases other than
     /// `ShortString`, it has a length of 1.
     pub fn encode(&self) -> Vec<u32> {
+        // switch the MSB of signed integers so that
+        // switch_sign8(-1) < switch_sign8(1)
+        let switch_sign8 = |i: i8| (i as u32) ^ (1 << 31);
+        let switch_sign16 = |i: i16| (i as u32) ^ (1 << 31);
+        let switch_sign32 = |i: i32| (i as u32) ^ (1 << 31);
         match self {
             Self::Bool(b) => vec![*b as u32],
             Self::U8(u) => vec![*u as u32],
             Self::U16(u) => vec![*u as u32],
             Self::U32(u) => vec![*u as u32],
-            Self::I8(i) => vec![*i as u32],
-            Self::I16(i) => vec![*i as u32],
-            Self::I32(i) => vec![*i as u32],
+            Self::I8(i) => vec![switch_sign8(*i)],
+            Self::I16(i) => vec![switch_sign16(*i)],
+            Self::I32(i) => vec![switch_sign32(*i)],
             Self::ShortString(s) => {
                 let s_len = s.len();
                 let s_bytes = s.as_bytes();
                 let mut result: Vec<u32> = Vec::new();
+                let get_or_zero = |j: usize| (if j < s_len { s_bytes[j] } else { 0u8 }) as u32;
                 for i in 0..8 {
                     let j = 4 * i;
                     let (b0, b1, b2, b3) = (
-                        if j < s_len { s_bytes[j] } else { 0u8 } as u32,
-                        if j + 1 < s_len { s_bytes[j + 1] } else { 0u8 } as u32,
-                        if j + 2 < s_len { s_bytes[j + 2] } else { 0u8 } as u32,
-                        if j + 3 < s_len { s_bytes[j + 3] } else { 0u8 } as u32,
+                        get_or_zero(j),
+                        get_or_zero(j + 1),
+                        get_or_zero(j + 2),
+                        get_or_zero(j + 3),
                     );
                     let u32_from_bytes = (b0 << 24) + (b1 << 16) + (b2 << 8) + b3;
                     result.push(u32_from_bytes);
@@ -143,7 +151,7 @@ impl From<(&str, &CellType)> for CellContent {
 }
 
 /// A struct holding a vector of tuples `(column_identifier, data_type)`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TableHeaders(pub Vec<(String, CellType)>);
 
 impl TableHeaders {
@@ -159,21 +167,113 @@ impl TableHeaders {
         }
         Err(format!("column '{column}' does not exist"))
     }
-    fn type_of(&self, column: String) -> Result<CellType, String> {
-        for (label, cell_type) in self.0.iter() {
-            if label == &column {
-                return Ok(cell_type.clone());
-            }
-        }
-        Err(format!("column '{column}' does not exist"))
-    }
+    // fn type_of(&self, column: String) -> Result<CellType, String> {
+    //     for (label, cell_type) in self.0.iter() {
+    //         if label == &column {
+    //             return Ok(cell_type.clone());
+    //         }
+    //     }
+    //     Err(format!("column '{column}' does not exist"))
+    // }
 }
 
 /// A representation of a SQL table.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Table {
     pub headers: TableHeaders,
     pub content: Vec<Vec<CellContent>>,
+}
+
+/// An encoded representation of a SQL table.
+///
+/// Each entry is stored as a `Vec<u32>`. A table is a vector of entries.
+#[derive(Debug)]
+pub struct EncodedTable {
+    pub headers: TableHeaders,
+    pub content: Vec<Vec<u32>>,
+}
+
+impl From<Table> for EncodedTable {
+    fn from(table: Table) -> Self {
+        Self {
+            headers: table.headers.clone(),
+            content: table
+                .content
+                .iter()
+                .map(|entry| entry.iter().map(|cell| cell.encode()).flatten().collect())
+                .collect::<Vec<Vec<u32>>>(),
+        }
+    }
+}
+
+impl EncodedTable {
+    fn run_query_on_entry(&self, entry: &Vec<u32>, query: &EncryptedSyntaxTree) -> FheBool {
+        if query.is_empty() {
+            return FheBool::encrypt_trivial(true);
+        }
+        let entry_length = entry.len();
+        // use PBS to map an encrypted index to an encrypted value, via the `map` method
+        let f = |u: u64| -> u64 {
+            let v = u as usize;
+            if v < entry_length {
+                entry[v] as u64
+            } else {
+                0
+            }
+        };
+        let compute_atom = |current_val: FheUint32, encrypted_atom: &EncryptedAtom| {
+            let (_, val, is_leq, negate) = encrypted_atom.clone();
+            FheUint2::cast_from(is_leq & current_val.lt(val.clone()))
+                + FheUint2::cast_from(current_val.eq(val))
+                + FheUint2::cast_from(negate)
+        };
+        // Use FheUint2 so that XOR becomes addition mod 2 (the MSB of the result
+        // is ignored)
+        let mut result_bool = FheUint2::encrypt_trivial(0u32);
+        let mut current_and_clause = compute_atom(
+            FheUint32::cast_from(query[0].1 .0.clone()).map(f),
+            &query[0].1,
+        );
+        for (op, encrypted_atom) in query {
+            let index = encrypted_atom.0.clone();
+            let op_as_uint2 = FheUint2::cast_from(op.clone());
+            let current_val = FheUint32::cast_from(index).map(f);
+            let atom_bool = compute_atom(current_val, encrypted_atom);
+            // result_bool:
+            //   | if !op: result_bool OR current_and_clause
+            //   | else: result_bool
+            // so we get:
+            // result_bool = (op AND result_bool) XOR (!op AND (result_bool OR current_and_clause))
+            // We then replace:
+            // - a XOR b by a+b,
+            // - a AND b by a*b,
+            // - a OR b by a+b+a*b,
+            // - !a by 1+a,
+            // and compute modulo 2:
+            // result_bool = op * result_bool + (1 + op) * (result_bool + current_and_clause
+            //                                              + result_bool * current_and_clause)
+            //             = result_bool + (1 + op) * current_and_clause * (1 + result_bool)
+            result_bool =
+                &result_bool + (1 + &op_as_uint2) * &current_and_clause * (1 + &result_bool);
+            // current_and_clause:
+            //   | if op: (current_and_clause AND atom_bool)
+            //   | else: atom_bool
+            // so we get:
+            // current_and_clause = (op AND (current_and_clause AND atom_bool)) XOR (!op AND atom_bool)
+            // and compute modulo 2:
+            // current_and_clause = (op * current_and_clause * atom_bool) + (1 + op) * atom_bool
+            //                    = atom_bool * (1 + op * (1 + current_and_clause))
+            current_and_clause = atom_bool * (1 + &op_as_uint2 * (1 + current_and_clause));
+        }
+        (result_bool % 2).ne(&FheUint2::encrypt_trivial(0u16))
+    }
+    pub fn run_fhe_query(&self, query: EncryptedSyntaxTree) -> Vec<FheBool> {
+        // iterate through each entry
+        self.content
+            .iter()
+            .map(|entry| self.run_query_on_entry(entry, &query))
+            .collect()
+    }
 }
 
 /// A vector of tuples `(table_name, table)`.
@@ -200,8 +300,10 @@ fn read_headers(path: PathBuf) -> TableHeaders {
     TableHeaders(result)
 }
 
-/// Loads a directory with a structure described above in a format
-/// that works for your implementation of the encryted query
+/// Loads a directory with structure:
+/// - `db_dir`:
+///   - `table_1.csv`
+///   - `table_2.csv`
 pub fn load_tables(path: PathBuf) -> Result<Tables, Box<dyn std::error::Error>> {
     let mut result: Vec<(String, Table)> = Vec::new();
     let db_path = fs::read_dir(path).expect("Database path error: can't read directory {path}");

@@ -1,53 +1,12 @@
-use sqlparser::ast::{SetExpr, Statement};
-use sqlparser::dialect::GenericDialect;
-use sqlparser::parser::Parser;
-use std::{fs::read_to_string, path::PathBuf};
-// use tfhe::boolean::client_key;
+use std::path::PathBuf;
 use tfhe::prelude::*;
-use tfhe::shortint::PBSParameters;
-use tfhe::{generate_keys, set_server_key, ClientKey, ConfigBuilder, FheUint32};
+use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool};
 
 mod query;
-mod tables {
-    //! This module holds various types related to the handling of SQL tables.
-    //! They are represented as a vector of entries, which are themselves just a
-    //! vector of `CellContent`s, which hold each value in that table.
-    //!
-    //! The main function is `load_tables`, which reads a database from disk.
-    //!
-    //! The type `CellContent` is also used in the `query` module, so some methods are defined
-    //! to encrypt a `CellContent` with a `ClientKey`.
-}
+mod tables;
 
-use query::WhereSyntaxTree;
+use query::*;
 use tables::*;
-
-fn parse_query(path: PathBuf) -> Statement {
-    let dialect = GenericDialect {};
-    let str_query = read_to_string(path.clone()).expect(
-        format!(
-            "Could not load query file at {}",
-            path.to_str().expect("invalid Unicode for {path:?}")
-        )
-        .as_str(),
-    );
-    let ast = Parser::parse_sql(&dialect, &str_query).unwrap();
-    ast[0].clone()
-}
-
-fn build_where_syntax_tree(statement: Statement) -> WhereSyntaxTree {
-    match statement {
-        Statement::Query(q) => match q.body.as_ref() {
-            SetExpr::Select(s) => WhereSyntaxTree::from(s.selection.clone().unwrap()),
-            _ => panic!("unknown query: {q:?}"),
-        },
-        _ => panic!("unknown statement: {statement:?}"),
-    }
-}
-
-fn default_cpu_parameters() -> PBSParameters {
-    PBSParameters::PBS(tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS)
-}
 
 // fn encrypt_query(query: sqlparser::ast::Select) -> EncryptedQuery;
 
@@ -69,7 +28,39 @@ fn default_cpu_parameters() -> PBSParameters {
 /// the clear DB system you use for comparison
 // fn decrypt_result(clientk_key: &ClientKey, result: &EncryptedResult) -> String;
 
-fn vec_u32_to_string(v: Vec<u32>) -> String {
+fn decode_entry(headers: TableHeaders, entry: Vec<u32>) -> Vec<CellContent> {
+    let decode_i32 = |i: u32| {
+        if i < (1 << 31) {
+            -(i as i32)
+        } else {
+            (i - (1 << 31)) as i32
+        }
+    };
+    let mut entry_index = 0;
+    let mut result: Vec<CellContent> = Vec::with_capacity(headers.0.len());
+    for (_column_name, cell_type) in headers.0 {
+        let new_cellcontent = match cell_type {
+            CellType::Bool => CellContent::Bool(entry[entry_index] != 0),
+            CellType::U8 => CellContent::U8(entry[entry_index] as u8),
+            CellType::U16 => CellContent::U16(entry[entry_index] as u16),
+            CellType::U32 => CellContent::U32(entry[entry_index]),
+            CellType::I8 => CellContent::I8(decode_i32(entry[entry_index]) as i8),
+            CellType::I16 => CellContent::I16(decode_i32(entry[entry_index]) as i16),
+            CellType::I32 => CellContent::I32(decode_i32(entry[entry_index])),
+            CellType::ShortString => {
+                entry_index += 3;
+                CellContent::ShortString(decode_u32_string(
+                    entry[(entry_index - 3)..(entry_index + 1)].to_vec(),
+                ))
+            }
+        };
+        result.push(new_cellcontent);
+        entry_index += 1;
+    }
+    result
+}
+
+fn decode_u32_string(v: Vec<u32>) -> String {
     let mut vec_u8 = Vec::<u8>::new();
     for u in v {
         let (c0, c1, c2, c3) = (
@@ -90,51 +81,67 @@ fn vec_u32_to_string(v: Vec<u32>) -> String {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let params = default_cpu_parameters();
     let config = ConfigBuilder::default()
-        .use_custom_parameters(params, None)
+        .enable_function_evaluation()
         .build();
 
-    // Key generation
-    let (client_key, server_keys) = generate_keys(config);
+    // KeyGen...
+    // (insert Waifu here)
+    let (client_key, server_key) = generate_keys(config);
 
-    // On the server side:
-    set_server_key(server_keys);
+    // Server-side
+    set_server_key(server_key);
 
     let query_path = PathBuf::from("query.txt");
     let query = build_where_syntax_tree(parse_query(query_path));
-    let cnf = query.conjuntive_normal_form();
+    let dnf = query.disjunctive_normal_form();
 
     println!("initial query: \n{}\n", query.to_string());
-    println!("cnf query: \n{}\n", cnf.to_string());
+    println!("dnf query: \n{}\n", dnf.to_string());
 
     let db_dir_path = "db_dir";
     let tables = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
-    let (_, table) = &tables.0[0];
-    println!("headers: {:?}\n", &table.headers);
+    let (_, table) = tables.0[0].clone();
+    let headers = table.headers.clone();
+    println!("headers: {:?}\n", headers);
 
-    let encrypted_query = cnf.encrypt(&client_key, &table.headers);
+    let encrypted_query = dnf.encrypt(&client_key, &headers);
 
-    println!("length: {:?}", encrypted_query.len());
+    // println!("length: {:?}", encrypted_query.len());
+
+    let encoded_table = EncodedTable::from(table);
+
+    let ct_result = encoded_table.run_fhe_query(encrypted_query);
+
+    let clear_result = ct_result
+        .into_iter()
+        .map(|ct_bool: FheBool| ct_bool.decrypt(&client_key))
+        .collect::<Vec<bool>>();
+    println!("result: {clear_result:?}");
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use query::*;
+    // use query::*;
+
+    // #[test]
+    // fn test_switch_sign() {
+    //     use tfhe::core_crypto::commons::traits::UnsignedInteger;
+    //     let minus_one = -1i8;
+    //     let unsigned = (minus_one as u32) ^ (1 << 31);
+    //     println!("{}", unsigned.to_bits_string(4));
+    //     assert!(false);
+    // }
 
     #[test]
     fn encrypt_u8() {
         println!("generating FHE keys...");
-        let params = default_cpu_parameters();
-        let config = ConfigBuilder::default()
-            .use_custom_parameters(params, None)
-            .build();
-
-        // Key generation
-        let (client_key, _server_keys) = generate_keys(config);
+        let config = ConfigBuilder::default().build();
+        let (client_key, _server_key) = generate_keys(config);
         println!("DONE");
         let content: u8 = 5;
         let cell: CellContent = CellContent::U8(content);
@@ -148,33 +155,27 @@ mod tests {
     #[test]
     fn encrypt_short_string() {
         println!("generating FHE keys...");
-        let params = default_cpu_parameters();
-        let config = ConfigBuilder::default()
-            .use_custom_parameters(params, None)
-            .build();
-
-        // Key generation
-        let (client_key, _server_keys) = generate_keys(config);
+        let config = ConfigBuilder::default().build();
+        let (client_key, _server_key) = generate_keys(config);
         println!("DONE");
         let content: String = "test".into();
         let cell: CellContent = CellContent::ShortString(content.clone());
         println!("encrypting content: {cell:?}...");
         let encrypted_cell = cell.encrypt(&client_key);
         println!("decrypting...");
-        let decrypted_cell: Vec<u32> = decrypt_vec(encrypted_cell, &client_key);
-        let string_decrypted_cell = vec_u32_to_string(decrypted_cell);
+        let decrypted_cell: Vec<u32> = encrypted_cell
+            .iter()
+            .map(|c| c.decrypt(&client_key))
+            .collect();
+        let string_decrypted_cell = decode_u32_string(decrypted_cell);
         assert_eq!(content, string_decrypted_cell);
     }
 
     #[test]
     fn encrypt_atomic_condition() {
         println!("generating FHE keys...");
-        let params = default_cpu_parameters();
-        let config = ConfigBuilder::default()
-            .use_custom_parameters(params, None)
-            .build();
-        // Key generation
-        let (client_key, _server_keys) = generate_keys(config);
+        let config = ConfigBuilder::default().build();
+        let (client_key, _server_key) = generate_keys(config);
         println!("DONE");
         let headers = TableHeaders(vec![(String::from("age"), CellType::U32)]);
         let condition: AtomicCondition = AtomicCondition {
@@ -183,7 +184,7 @@ mod tests {
             value: CellContent::U32(890),
         };
         println!("encrypting condition: {condition:?}...");
-        let encrypted_cond = condition.encrypt(&client_key, &headers);
+        let _encrypted_cond = condition.encrypt(&client_key, &headers);
         // println!("decrypting...");
         // let decrypted_cond: Vec<u8> = decrypt_vec(encrypted_cond, &client_key);
     }

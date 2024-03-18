@@ -1,6 +1,14 @@
+//! Query parsing and manipulation.
+//!
+//! This module contains types for an internal representation of queries, methods for obtaining
+//! a disjunctive normal form of the resulting syntax tree, as well as methods for encoding and
+//! encrypting them.
+
 use crate::{CellContent, CellType, TableHeaders};
-use sqlparser::ast::{BinaryOperator, Expr, Ident, UnaryOperator, Value};
-use std::str::FromStr;
+use sqlparser::ast::{BinaryOperator, Expr, Ident, SetExpr, Statement, UnaryOperator, Value};
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser;
+use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 use tfhe::prelude::*;
 use tfhe::{ClientKey, FheBool, FheUint32, FheUint8};
 
@@ -87,7 +95,7 @@ impl AtomicCondition {
     /// - `client_key` is used for encryption,
     /// - `headers` is used to get an `u8` from a column identifier.
     /// # Outputs:
-    /// a vector of tuples `(FheUint8, FheUint8, FheBool, FheBool)`, each tuple being:
+    /// a vector of tuples `(FheUint8, FheUint32, FheBool, FheBool)`, each tuple being:
     /// - at index 0: the encrypted u8 identifying a column,
     /// - at index 1: the encrypted value against which the column is tested,
     /// - at index 2: an encrypted `bool` for choosing an operator. If `true` then use `<=`,
@@ -163,7 +171,7 @@ impl From<(Ident, BinaryOperator, Ident)> for AtomicCondition {
     }
 }
 
-/// A simple enum holding the syntax tree to the right of the `WHERE` keyword
+/// A simple enum holding the syntax tree to the right of the `WHERE` keyword.
 #[derive(Clone, Debug)]
 pub enum WhereSyntaxTree {
     Atom(AtomicCondition),
@@ -172,7 +180,8 @@ pub enum WhereSyntaxTree {
     Or(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
 }
 
-pub type EncryptedSyntaxTree = Vec<(EncryptedAtom, FheBool)>;
+/// A type alias for storing (the encryption of) a `WHERE` syntax tree in disjunctive normal form.
+pub type EncryptedSyntaxTree = Vec<(FheBool, EncryptedAtom)>;
 
 /// Builds a `WhereSyntaxTree` from a `sqlparser::Expr`. This is used to discard all
 /// unnecessary data that comes along a `sqlparser::Expr`.
@@ -218,28 +227,22 @@ impl From<Expr> for WhereSyntaxTree {
 }
 
 impl WhereSyntaxTree {
-    /// Stringifies a `WhereSyntaxTree` for debugging purposes
+    /// Stringifies a `WhereSyntaxTree` for debugging purposes.
     fn to_string_lines(&self) -> Vec<String> {
         let indent_closure =
             |v: Vec<String>| v.iter().map(|s| format!("  {s}")).collect::<Vec<String>>();
+        let binary_op_closure = |op: &str, a: &Box<WhereSyntaxTree>, b: &Box<WhereSyntaxTree>| {
+            let mut result = vec![String::from(op)];
+            let mut left: Vec<String> = indent_closure(a.to_string_lines());
+            let mut right: Vec<String> = indent_closure(b.to_string_lines());
+            result.append(&mut left);
+            result.append(&mut right);
+            result
+        };
         match self {
             WhereSyntaxTree::Atom(a) => vec![a.to_string()],
-            WhereSyntaxTree::And(a, b) => {
-                let mut result = vec![String::from("And")];
-                let mut left: Vec<String> = indent_closure(a.to_string_lines());
-                let mut right: Vec<String> = indent_closure(b.to_string_lines());
-                result.append(&mut left);
-                result.append(&mut right);
-                result
-            }
-            WhereSyntaxTree::Or(a, b) => {
-                let mut result = vec![String::from("Or")];
-                let mut left: Vec<String> = indent_closure(a.to_string_lines());
-                let mut right: Vec<String> = indent_closure(b.to_string_lines());
-                result.append(&mut left);
-                result.append(&mut right);
-                result
-            }
+            WhereSyntaxTree::And(a, b) => binary_op_closure("And", a, b),
+            WhereSyntaxTree::Or(a, b) => binary_op_closure("Or", a, b),
             WhereSyntaxTree::Not(a) => {
                 let mut result = a.to_string_lines();
                 result[0] = format!("Not {}", &result[0]);
@@ -247,13 +250,15 @@ impl WhereSyntaxTree {
             }
         }
     }
+    /// Stringifies a `WhereSyntaxTree` for debugging purposes.
     pub fn to_string(&self) -> String {
         self.to_string_lines().join("\n")
     }
     /// Creates a new syntax tree where the `AND` operators are at the bottom of the tree.
     /// This uses the usual distributivity relation `(a OR b) AND c = (a AND c) OR (b AND c)`.
-    /// *WARNING* This method assumes there is no `NOT` operator in the syntax tree. Make sure to
-    /// call the `propagate_negation` method beforehand.
+    ///
+    /// <div class="warning"> This method assumes there is no `NOT` operator in the syntax tree.
+    /// Make sure to call the `propagate_negation` method beforehand. </div>
     fn distribute_and_node(&self) -> Self {
         match self {
             WhereSyntaxTree::And(a, b) => {
@@ -300,7 +305,7 @@ impl WhereSyntaxTree {
                 Box::new(a.distribute_and_node()),
                 Box::new(b.distribute_and_node()),
             ),
-            WhereSyntaxTree::Not(a) => panic!("NOT gate encountered during AND distributivity."),
+            WhereSyntaxTree::Not(_) => panic!("NOT gate encountered during AND distributivity."),
             WhereSyntaxTree::Atom(_) => self.clone(),
         }
     }
@@ -338,9 +343,10 @@ impl WhereSyntaxTree {
             }
         }
     }
-    pub fn conjuntive_normal_form(&self) -> Self {
-        // negations are only allowed in the leaves of the syntax tree,
-        // an And node cannot be a parent of an Or node
+    /// Creates an equivalent syntax tree in disjunctive normal form.
+    pub fn disjunctive_normal_form(&self) -> Self {
+        // 1. negations are only allowed in the leaves of the syntax tree,
+        // 2. an And node cannot be a parent of an Or node
         self.propagate_negation(false).distribute_and_node()
     }
     /// Encrypts the syntax tree as a vector of elements `(encrypted_atom, op)` where
@@ -348,29 +354,53 @@ impl WhereSyntaxTree {
     /// - `op == true`: apply `AND` operator,
     /// - `op == false`: apply `OR` operator.
     /// The final element's `op` is ignored.
-    /// *WARNING* This method assumes that the syntax tree is in conjunctive normal form.
+    ///
+    /// <div class="warning">This method assumes that the syntax tree is in disjunctive normal form.</div>
     pub fn encrypt(&self, client_key: &ClientKey, headers: &TableHeaders) -> EncryptedSyntaxTree {
         match self {
             WhereSyntaxTree::Atom(a) => a
                 .encrypt(client_key, headers)
                 .into_iter()
-                .map(|atom| (atom, FheBool::encrypt(true, client_key)))
+                .map(|atom| (FheBool::encrypt(false, client_key), atom))
                 .collect::<Vec<_>>(),
             WhereSyntaxTree::And(a, b) => {
                 let mut result = a.encrypt(client_key, headers);
                 let left_length = result.len();
-                result[left_length - 1].1 = FheBool::encrypt(true, client_key);
+                result[left_length - 1].0 = FheBool::encrypt(true, client_key);
                 result.append(&mut b.encrypt(client_key, headers));
                 result
             }
             WhereSyntaxTree::Or(a, b) => {
                 let mut result = a.encrypt(client_key, headers);
                 let left_length = result.len();
-                result[left_length - 1].1 = FheBool::encrypt(false, client_key);
+                result[left_length - 1].0 = FheBool::encrypt(false, client_key);
                 result.append(&mut b.encrypt(client_key, headers));
                 result
             }
             WhereSyntaxTree::Not(_) => panic!("Encountered a NOT operator during encryption."),
         }
+    }
+}
+
+pub fn parse_query(path: PathBuf) -> Statement {
+    let dialect = GenericDialect {};
+    let str_query = read_to_string(path.clone()).expect(
+        format!(
+            "Could not load query file at {}",
+            path.to_str().expect("invalid Unicode for {path:?}")
+        )
+        .as_str(),
+    );
+    let ast = Parser::parse_sql(&dialect, &str_query).unwrap();
+    ast[0].clone()
+}
+
+pub fn build_where_syntax_tree(statement: Statement) -> WhereSyntaxTree {
+    match statement {
+        Statement::Query(q) => match q.body.as_ref() {
+            SetExpr::Select(s) => WhereSyntaxTree::from(s.selection.clone().unwrap()),
+            _ => panic!("unknown query: {q:?}"),
+        },
+        _ => panic!("unknown statement: {statement:?}"),
     }
 }
