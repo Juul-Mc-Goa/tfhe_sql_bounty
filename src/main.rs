@@ -107,8 +107,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let encrypted_query = dnf.encrypt(&client_key, &headers);
 
-    // println!("length: {:?}", encrypted_query.len());
-
     let encoded_table = EncodedTable::from(table);
 
     let ct_result = encoded_table.run_fhe_query(encrypted_query);
@@ -125,24 +123,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
 
+    use tfhe::{ClientKey, ServerKey};
+
     use super::*;
     // use query::*;
 
-    // #[test]
-    // fn test_switch_sign() {
-    //     use tfhe::core_crypto::commons::traits::UnsignedInteger;
-    //     let minus_one = -1i8;
-    //     let unsigned = (minus_one as u32) ^ (1 << 31);
-    //     println!("{}", unsigned.to_bits_string(4));
-    //     assert!(false);
-    // }
+    fn keygen() -> (ClientKey, ServerKey) {
+        println!("generating FHE keys...");
+        let config = ConfigBuilder::default()
+            .enable_function_evaluation()
+            .build();
+        let keys = generate_keys(config);
+        println!("DONE");
+        keys
+    }
+
+    #[test]
+    fn run_fhe_query() {
+        // KeyGen...
+        // (insert Waifu here)
+        let (client_key, server_key) = keygen();
+
+        // Server-side
+        set_server_key(server_key);
+
+        let query_path = PathBuf::from("query.txt");
+        let query = build_where_syntax_tree(parse_query(query_path));
+        let dnf = query.disjunctive_normal_form();
+
+        let db_dir_path = "db_dir";
+        let tables = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
+        let (_, table) = tables.0[0].clone();
+        let headers = table.headers.clone();
+
+        let encrypted_query = dnf.encrypt(&client_key, &headers);
+        let encoded_table = EncodedTable::from(table);
+
+        let ct_result = encoded_table.run_fhe_query(encrypted_query);
+
+        let clear_result = ct_result
+            .into_iter()
+            .map(|ct_bool: FheBool| ct_bool.decrypt(&client_key))
+            .collect::<Vec<bool>>();
+        println!("result: {clear_result:?}");
+    }
 
     #[test]
     fn encrypt_u8() {
-        println!("generating FHE keys...");
-        let config = ConfigBuilder::default().build();
-        let (client_key, _server_key) = generate_keys(config);
-        println!("DONE");
+        let (client_key, _server_key) = keygen();
         let content: u8 = 5;
         let cell: CellContent = CellContent::U8(content);
         println!("encrypting content: {cell:?}...");
@@ -154,10 +182,7 @@ mod tests {
 
     #[test]
     fn encrypt_short_string() {
-        println!("generating FHE keys...");
-        let config = ConfigBuilder::default().build();
-        let (client_key, _server_key) = generate_keys(config);
-        println!("DONE");
+        let (client_key, _server_key) = keygen();
         let content: String = "test".into();
         let cell: CellContent = CellContent::ShortString(content.clone());
         println!("encrypting content: {cell:?}...");
@@ -173,10 +198,7 @@ mod tests {
 
     #[test]
     fn encrypt_atomic_condition() {
-        println!("generating FHE keys...");
-        let config = ConfigBuilder::default().build();
-        let (client_key, _server_key) = generate_keys(config);
-        println!("DONE");
+        let (client_key, _server_key) = keygen();
         let headers = TableHeaders(vec![(String::from("age"), CellType::U32)]);
         let condition: AtomicCondition = AtomicCondition {
             ident: "age".into(),
