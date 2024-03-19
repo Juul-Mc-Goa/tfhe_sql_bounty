@@ -1,7 +1,9 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 use tfhe::integer::wopbs::WopbsKey;
-use tfhe::integer::{ClientKey, IntegerCiphertext, RadixCiphertext, ServerKey};
+use tfhe::integer::{
+    BooleanBlock, ClientKey, IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, ServerKey,
+};
 use tfhe::shortint::Ciphertext;
 
 use crate::{EncryptedAtom, EncryptedSyntaxTree};
@@ -212,72 +214,70 @@ impl EncodedTable {
         &self,
         entry: &Vec<u32>,
         query: &EncryptedSyntaxTree,
-        server_key: ServerKey,
-        wopbs_key: WopbsKey,
+        server_key: &ServerKey,
+        wopbs_key: &WopbsKey,
     ) -> Ciphertext {
         if query.is_empty() {
-            return server_key.create_trivial_radix(1, 1);
+            return server_key
+                .create_trivial_radix::<u64, RadixCiphertext>(1u64, 1)
+                .into_blocks()[0]
+                .clone();
         }
         let entry_length = entry.len();
-        // use PBS to map an encrypted index to an encrypted value, via the `map` method
-        // TODO use WopbsKey::generate_lut_radix()
-        // REVIEW generate_lut_radix takes a ciphertext and a fn as inputs ??
-        let f = |u: u64| -> u64 {
-            let v = u as usize;
-            if v < entry_length {
-                entry[v] as u64
-            } else {
-                0
-            }
+
+        // convenience closure for looking up an entry's cell content from an encrypted index
+        let column_id_lut = |encrypted_id: &RadixCiphertext| -> RadixCiphertext {
+            let f = |u: u64| -> u64 {
+                let v = u as usize;
+                if v < entry_length {
+                    entry[v] as u64
+                } else {
+                    0
+                }
+            };
+            let ct = wopbs_key.keyswitch_to_wopbs_params(&server_key, encrypted_id);
+            let lut = wopbs_key.generate_lut_radix(&ct, f);
+            let ct_res = wopbs_key.wopbs(&ct, &lut);
+            wopbs_key.keyswitch_to_pbs_params(&ct_res)
         };
+        // convenience closure for negating a bool
+        let negate_bool =
+            |b: &RadixCiphertext| -> RadixCiphertext { server_key.unchecked_scalar_add(&b, 1) };
         // convenience closure for adding bools
-        let add_bool = |b1: Ciphertext, b2: Ciphertext| -> Ciphertext {
-            server_key
-                .unchecked_add_parallelized(
-                    &RadixCiphertext::from_blocks(vec![b1]),
-                    &RadixCiphertext::from_blocks(vec![b2]),
-                )
-                .blocks()[0]
-                .clone()
+        let add_bool = |b1: &RadixCiphertext, b2: &RadixCiphertext| -> RadixCiphertext {
+            server_key.unchecked_add_parallelized(&b1, &b2)
         };
         // convenience closure for multiplying bools
-        let mul_bool = |b1: Ciphertext, b2: Ciphertext| -> Ciphertext {
-            server_key
-                .unchecked_mul_parallelized(
-                    &RadixCiphertext::from_blocks(vec![b1]),
-                    &RadixCiphertext::from_blocks(vec![b2]),
-                )
-                .blocks()[0]
-                .clone()
+        let mul_bool = |b1: &RadixCiphertext, b2: &RadixCiphertext| -> RadixCiphertext {
+            server_key.unchecked_mul_parallelized(&b1, &b2)
         };
-        // run an encrypted atomic query
-        let compute_atom = |current_val: RadixCiphertext, encrypted_atom: &EncryptedAtom| {
-            let (_, val, is_leq, negate) = encrypted_atom;
+        let boolean_to_radix =
+            |b: BooleanBlock| -> RadixCiphertext { b.into_radix(1, &server_key) };
+        let ct_to_radix =
+            |ct: Ciphertext| -> RadixCiphertext { RadixCiphertext::from_blocks(vec![ct]) };
 
+        // run an encrypted atomic query
+        let compute_atom = |encrypted_atom: &EncryptedAtom| {
+            let (index, val, is_leq, negate) = encrypted_atom;
+            let current_val = column_id_lut(&index);
+            // is_leq * (current_val < val) + (current_val == val) + negate
             add_bool(
-                add_bool(
-                    mul_bool(
-                        is_leq.clone(),
-                        server_key.lt_parallelized(&current_val, val).into_inner(),
+                &add_bool(
+                    &mul_bool(
+                        &ct_to_radix(is_leq.clone()),
+                        &boolean_to_radix(server_key.lt_parallelized(&current_val, val)),
                     ),
-                    server_key.eq_parallelized(&current_val, val).into_inner(),
+                    &boolean_to_radix(server_key.eq_parallelized(&current_val, val)),
                 ),
-                negate.clone(),
+                &ct_to_radix(negate.clone()),
             )
         };
 
-        // Use FheUint2 so that XOR becomes addition mod 2 (the MSB of the result
-        // is ignored)
-        let mut result_bool = FheUint2::encrypt_trivial(0u32);
-        let mut current_and_clause = compute_atom(
-            FheUint32::cast_from(query[0].1 .0.clone()).map(f),
-            &query[0].1,
-        );
+        let mut result_bool = server_key.create_trivial_radix(0u64, 1);
+        let mut current_and_clause = compute_atom(&query[0].1);
         for (op, encrypted_atom) in query {
-            let index = encrypted_atom.0.clone();
-            let op_as_uint2 = FheUint2::cast_from(op.clone());
-            let current_val = FheUint32::cast_from(index).map(f);
-            let atom_bool = compute_atom(current_val, encrypted_atom);
+            let op_radix = ct_to_radix(op.clone());
+            let atom_bool = compute_atom(encrypted_atom);
             // result_bool:
             //   | if !op: result_bool OR current_and_clause
             //   | else: result_bool
@@ -292,8 +292,13 @@ impl EncodedTable {
             // result_bool = op * result_bool + (1 + op) * (result_bool + current_and_clause
             //                                              + result_bool * current_and_clause)
             //             = result_bool + (1 + op) * current_and_clause * (1 + result_bool)
-            result_bool =
-                &result_bool + (1 + &op_as_uint2) * &current_and_clause * (1 + &result_bool);
+
+            // we need to create a temporary value so that rust's borrow checker doesn't throw an error
+            let temp_bool = mul_bool(
+                &negate_bool(&op_radix),
+                &mul_bool(&current_and_clause, &negate_bool(&result_bool)),
+            );
+            server_key.add_assign_parallelized(&mut result_bool, &temp_bool);
             // current_and_clause:
             //   | if op: (current_and_clause AND atom_bool)
             //   | else: atom_bool
@@ -302,19 +307,27 @@ impl EncodedTable {
             // and compute modulo 2:
             // current_and_clause = (op * current_and_clause * atom_bool) + (1 + op) * atom_bool
             //                    = atom_bool * (1 + op * (1 + current_and_clause))
-            current_and_clause = atom_bool * (1 + &op_as_uint2 * (1 + current_and_clause));
+            // current_and_clause = atom_bool * (1 + &op_as_uint2 * (1 + current_and_clause));
+            current_and_clause = mul_bool(
+                &atom_bool,
+                &negate_bool(&mul_bool(&op_radix, &negate_bool(&current_and_clause))),
+            );
         }
-        (result_bool % 2).ne(&FheUint2::encrypt_trivial(0u16))
+        server_key
+            .scalar_rem_parallelized(&result_bool, 2u8)
+            .into_blocks()[0]
+            .clone()
     }
     pub fn run_fhe_query(
         &self,
-        query: EncryptedSyntaxTree,
-        server_key: ServerKey,
+        query: &EncryptedSyntaxTree,
+        server_key: &ServerKey,
+        wopbs_key: &WopbsKey,
     ) -> Vec<Ciphertext> {
         // iterate through each entry
         self.content
             .iter()
-            .map(|entry| self.run_query_on_entry(entry, &query, server_key))
+            .map(|entry| self.run_query_on_entry(entry, query, server_key, wopbs_key))
             .collect()
     }
 }
