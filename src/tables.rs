@@ -1,6 +1,6 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
-use tfhe::integer::wopbs::WopbsKey;
+use tfhe::integer::wopbs::{IntegerWopbsLUT, WopbsKey};
 use tfhe::integer::{
     BooleanBlock, ClientKey, IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, ServerKey,
 };
@@ -224,19 +224,24 @@ impl EncodedTable {
                 .clone();
         }
         let entry_length = entry.len();
+        // the server_key.generate_lut_radix() method needs a ciphertext for
+        // computing the lut size. We use num_blocks = 4, i.e. we assume the
+        // total number of columns in a table is lower than 4^4 = 256.
+        let ct_entry_length: RadixCiphertext =
+            server_key.create_trivial_radix(entry_length as u64, 4);
+        let f = |u: u64| -> u64 {
+            let v = u as usize;
+            if v < entry_length {
+                entry[v] as u64
+            } else {
+                0
+            }
+        };
+        let lut = wopbs_key.generate_lut_radix(&ct_entry_length, f);
 
         // convenience closure for looking up an entry's cell content from an encrypted index
         let column_id_lut = |encrypted_id: &RadixCiphertext| -> RadixCiphertext {
-            let f = |u: u64| -> u64 {
-                let v = u as usize;
-                if v < entry_length {
-                    entry[v] as u64
-                } else {
-                    0
-                }
-            };
             let ct = wopbs_key.keyswitch_to_wopbs_params(&server_key, encrypted_id);
-            let lut = wopbs_key.generate_lut_radix(&ct, f);
             let ct_res = wopbs_key.wopbs(&ct, &lut);
             wopbs_key.keyswitch_to_pbs_params(&ct_res)
         };
@@ -307,7 +312,6 @@ impl EncodedTable {
             // and compute modulo 2:
             // current_and_clause = (op * current_and_clause * atom_bool) + (1 + op) * atom_bool
             //                    = atom_bool * (1 + op * (1 + current_and_clause))
-            // current_and_clause = atom_bool * (1 + &op_as_uint2 * (1 + current_and_clause));
             current_and_clause = mul_bool(
                 &atom_bool,
                 &negate_bool(&mul_bool(&op_radix, &negate_bool(&current_and_clause))),
@@ -329,6 +333,46 @@ impl EncodedTable {
             .iter()
             .map(|entry| self.run_query_on_entry(entry, query, server_key, wopbs_key))
             .collect()
+    }
+}
+
+/// Updates a lookup table at the given index.
+///
+/// The argument `ct` is used internally to encode/decode indices. It should be the same
+/// as the one used for `generate_lut_radix`.
+fn update_lut(
+    index: usize,
+    value: u32,
+    lut: &mut IntegerWopbsLUT,
+    ct: &RadixCiphertext,
+    wopbs_key: &WopbsKey,
+) {
+    use tfhe::integer::wopbs::{decode_radix, encode_mix_radix, encode_radix};
+    let value = value as u64;
+
+    let basis = ct.moduli()[0];
+    let block_nb = ct.blocks().len();
+    let wopbs_inner = wopbs_key.clone().into_raw_parts();
+    let (wopbs_message_modulus, wopbs_carry_modulus) = (
+        wopbs_inner.param.message_modulus.0,
+        wopbs_inner.param.carry_modulus.0,
+    );
+    let delta: u64 = (1 << 63) / (wopbs_message_modulus * wopbs_carry_modulus) as u64;
+    let mut vec_deg_basis = vec![];
+
+    let mut modulus = 1;
+    for (i, deg) in ct.moduli().iter().zip(ct.blocks().iter()) {
+        modulus *= i;
+        let b = f64::log2((deg.degree.get() + 1) as f64).ceil() as u64;
+        vec_deg_basis.push(b);
+    }
+
+    let encoded_with_deg_val = encode_mix_radix(index as u64, &vec_deg_basis, basis);
+    let decoded_val = decode_radix(&encoded_with_deg_val, basis);
+    let f_val = value % modulus;
+    let encoded_f_val = encode_radix(f_val, basis, block_nb as u64);
+    for (lut_number, radix_encoded_val) in encoded_f_val.iter().enumerate().take(block_nb) {
+        lut[lut_number][index] = radix_encoded_val * delta;
     }
 }
 
@@ -367,7 +411,8 @@ fn read_headers(path: PathBuf) -> TableHeaders {
 ///   - ...
 pub fn load_tables(
     path: PathBuf,
-    server_key: &ServerKey,
+    server_key: ServerKey,
+    wopbs_key: WopbsKey,
 ) -> Result<Tables, Box<dyn std::error::Error>> {
     let mut result: Vec<(String, Table)> = Vec::new();
     let db_path = fs::read_dir(path).expect("Database path error: can't read directory {path}");
@@ -391,5 +436,48 @@ pub fn load_tables(
         }
         result.push((table_name, Table { headers, content }))
     }
-    Ok(Tables(result))
+    Ok(Tables {
+        server_key,
+        wopbs_key,
+        tables: result,
+    })
+}
+
+mod tests {
+    use super::*;
+    use tfhe::{
+        integer::{gen_keys_radix, RadixClientKey},
+        shortint::{
+            parameters::parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+            prelude::PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+        },
+    };
+
+    fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey) {
+        let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
+        let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+        (ck, sk, wopbs_key)
+    }
+
+    #[test]
+    fn udpate_lookup_table() {
+        let (ck, sk, wopbs_key) = generate_keys();
+        let ct_entry_length: RadixCiphertext = sk.create_trivial_radix(8u64, 4);
+        let f = |u: u64| -> u64 { u + 5 };
+        let mut lut = wopbs_key.generate_lut_radix(&ct_entry_length, f);
+        // update_lut(0, 3, &mut lut, &ct_entry_length, &wopbs_key);
+        let apply_lut = |encrypted_id: &RadixCiphertext| -> RadixCiphertext {
+            let ct = wopbs_key.keyswitch_to_wopbs_params(&sk, encrypted_id);
+            let ct_res = wopbs_key.wopbs(&ct, &lut);
+            wopbs_key.keyswitch_to_pbs_params(&ct_res)
+        };
+        let lut_at_2 = apply_lut(&sk.create_trivial_radix(2u64, 4));
+        let lut_at_1 = apply_lut(&sk.create_trivial_radix(1u64, 4));
+        let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
+        // let lut_at_1 = apply_lut(&sk.create_trivial_radix(1u64, 4));
+        let clear1: u32 = ck.decrypt(&lut_at_1);
+        let clear2: u32 = ck.decrypt(&lut_at_2);
+        assert_eq!(clear1, 6);
+        assert_eq!(clear2, 7);
+    }
 }
