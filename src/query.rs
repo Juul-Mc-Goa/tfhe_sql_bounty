@@ -366,19 +366,19 @@ impl WhereSyntaxTree {
             WhereSyntaxTree::Atom(a) => a
                 .encrypt(client_key, headers)
                 .into_iter()
-                .map(|atom| (FheBool::encrypt(false, client_key), atom))
+                .map(|atom| (client_key.encrypt_bool(false).into_inner(), atom))
                 .collect::<Vec<_>>(),
             WhereSyntaxTree::And(a, b) => {
                 let mut result = a.encrypt(client_key, headers);
                 let left_length = result.len();
-                result[left_length - 1].0 = FheBool::encrypt(true, client_key);
+                result[left_length - 1].0 = client_key.encrypt_bool(true).into_inner();
                 result.append(&mut b.encrypt(client_key, headers));
                 result
             }
             WhereSyntaxTree::Or(a, b) => {
                 let mut result = a.encrypt(client_key, headers);
                 let left_length = result.len();
-                result[left_length - 1].0 = FheBool::encrypt(false, client_key);
+                result[left_length - 1].0 = client_key.encrypt_bool(false).into_inner();
                 result.append(&mut b.encrypt(client_key, headers));
                 result
             }

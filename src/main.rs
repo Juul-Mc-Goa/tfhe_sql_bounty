@@ -1,13 +1,13 @@
 use std::path::PathBuf;
-use tfhe::integer::{gen_keys_radix, BooleanBlock};
-use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+use tfhe::integer::gen_keys_radix;
+use tfhe::integer::{wopbs::WopbsKey, RadixClientKey, ServerKey};
+use tfhe::shortint::Ciphertext;
 
 mod query;
 mod tables;
 
 use query::*;
 use tables::*;
-use tfhe::shortint::Ciphertext;
 
 // fn encrypt_query(query: sqlparser::ast::Select) -> EncryptedQuery;
 
@@ -81,37 +81,46 @@ fn decode_u32_string(v: Vec<u32>) -> String {
         .into()
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let number_of_blocks = 16;
+fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey) {
     // KeyGen...
     // (insert Waifu here)
-    let (mut client_key, mut server_key) =
-        gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, number_of_blocks);
 
-    let query_path = PathBuf::from("query.txt");
-    let query = build_where_syntax_tree(parse_query(query_path));
-    let dnf = query.disjunctive_normal_form();
+    use tfhe::shortint::parameters::{
+        parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+        PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+    };
+    let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
+    let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    (ck, sk, wopbs_key)
+}
 
-    println!("initial query: \n{}\n", query.to_string());
-    println!("dnf query: \n{}\n", dnf.to_string());
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // let (mut client_key, mut server_key, mut wopbs_key) = generate_keys();
 
-    let db_dir_path = "db_dir";
-    let tables =
-        load_tables(db_dir_path.into(), &server_key).expect("Failed to load DB at {db_dir_path}");
-    let (_, table) = tables.0[0].clone();
-    let headers = table.headers.clone();
-    println!("headers: {:?}\n", headers);
+    // let query_path = PathBuf::from("query.txt");
+    // let query = build_where_syntax_tree(parse_query(query_path));
+    // let dnf = query.disjunctive_normal_form();
 
-    let encrypted_query = dnf.encrypt(&client_key, &headers);
-    let encoded_table = EncodedTable::from(table);
+    // println!("initial query: \n{}\n", query.to_string());
+    // println!("dnf query: \n{}\n", dnf.to_string());
 
-    let ct_result = encoded_table.run_fhe_query(encrypted_query);
-    let clear_result = ct_result
-        .into_iter()
-        .map(|ct_bool: Ciphertext| client_key.decrypt_one_block(&ct_bool))
-        .collect::<Vec<bool>>();
+    // let db_dir_path = "db_dir";
+    // let tables = load_tables(db_dir_path.into(), &server_key, &wopbs_key)
+    //     .expect("Failed to load DB at {db_dir_path}");
+    // let (_, table) = tables.0[0].clone();
+    // let headers = table.headers.clone();
+    // println!("headers: {:?}\n", headers);
 
-    println!("result: {clear_result:?}");
+    // let encrypted_query = dnf.encrypt(&client_key, &headers);
+    // let encoded_table = EncodedTable::from(table);
+
+    // let ct_result = encoded_table.run_fhe_query(encrypted_query, &server_key, &wopbs_key);
+    // let clear_result = ct_result
+    //     .into_iter()
+    //     .map(|ct_bool: Ciphertext| client_key.decrypt_one_block(&ct_bool))
+    //     .collect::<Vec<bool>>();
+
+    // println!("result: {clear_result:?}");
 
     Ok(())
 }
@@ -119,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
 
-    use tfhe::ServerKey;
+    use tfhe::boolean::client_key;
 
     use super::*;
     // use query::*;
@@ -164,37 +173,35 @@ mod tests {
         println!("result: {clear_result:?}");
     }
 
-    fn generate_keys() -> (ClientKey, ServerKey) {
-        gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
-    }
-
     #[test]
     fn encrypt_u8() {
         println!("generating FHE keys...");
-        let (client_key, _server_key) = generate_keys();
+        let (client_key, _server_key, _) = generate_keys();
+        let client_key = client_key.as_ref();
         println!("DONE");
         let content: u8 = 5;
         let cell: CellContent = CellContent::U8(content);
         println!("encrypting content: {cell:?}...");
-        let encrypted_cell = cell.encrypt(&client_key);
+        let encrypted_cell = cell.encrypt(client_key);
         println!("decrypting...");
-        let decrypted_cell: u8 = encrypted_cell[0].decrypt(&client_key);
+        let decrypted_cell: u8 = client_key.decrypt_radix(&encrypted_cell[0]);
         assert_eq!(content, decrypted_cell);
     }
 
     #[test]
     fn encrypt_short_string() {
         println!("generating FHE keys...");
-        let (client_key, _server_key) = generate_keys();
+        let (client_key, _server_key, _) = generate_keys();
+        let client_key = client_key.as_ref();
         println!("DONE");
         let content: String = "test".into();
         let cell: CellContent = CellContent::ShortString(content.clone());
         println!("encrypting content: {cell:?}...");
-        let encrypted_cell = cell.encrypt(&client_key);
+        let encrypted_cell = cell.encrypt(client_key);
         println!("decrypting...");
         let decrypted_cell: Vec<u32> = encrypted_cell
             .iter()
-            .map(|c| c.decrypt(&client_key))
+            .map(|c| client_key.decrypt_radix::<u32>(c))
             .collect();
         let string_decrypted_cell = decode_u32_string(decrypted_cell);
         assert_eq!(content, string_decrypted_cell);
@@ -203,7 +210,8 @@ mod tests {
     #[test]
     fn encrypt_atomic_condition() {
         println!("generating FHE keys...");
-        let (client_key, _server_key) = generate_keys();
+        let (client_key, _server_key, _) = generate_keys();
+        let client_key = client_key.as_ref();
         println!("DONE");
         let headers = TableHeaders(vec![(String::from("age"), CellType::U32)]);
         let condition: AtomicCondition = AtomicCondition {
@@ -212,18 +220,18 @@ mod tests {
             value: CellContent::U32(890),
         };
         println!("encrypting condition: {condition:?}...");
-        let _encrypted_cond = condition.encrypt(&client_key, &headers);
+        let _encrypted_cond = condition.encrypt(client_key, &headers);
         // println!("decrypting...");
-        // let decrypted_cond: Vec<u8> = decrypt_vec(encrypted_cond, &client_key);
+        // let decrypted_cond: Vec<u8> = decrypt_vec(encrypted_cond, client_key);
     }
 
-    #[test]
-    fn load_db() {
-        let db_dir_path = "db_dir";
-        let tables = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
-        let (name0, table0) = &tables.0[0];
-        let (name1, table1) = &tables.0[1];
-        println!("{name0}\n{table0:?}");
-        println!("\n{name1}\n{table1:?}");
-    }
+    // #[test]
+    // fn load_db() {
+    //     let db_dir_path = "db_dir";
+    //     let tables = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
+    //     let (name0, table0) = &tables.0[0];
+    //     let (name1, table1) = &tables.0[1];
+    //     println!("{name0}\n{table0:?}");
+    //     println!("\n{name1}\n{table1:?}");
+    // }
 }
