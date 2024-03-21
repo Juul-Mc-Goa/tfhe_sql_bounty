@@ -133,6 +133,7 @@ mod tests {
     use super::*;
     // use query::*;
 
+<<<<<<< HEAD
     fn keygen() -> (ClientKey, ServerKey) {
         println!("generating FHE keys...");
         let config = ConfigBuilder::default()
@@ -173,6 +174,8 @@ mod tests {
         println!("result: {clear_result:?}");
     }
 
+=======
+>>>>>>> 293c772 (test the `update_lut` function)
     #[test]
     fn encrypt_u8() {
         println!("generating FHE keys...");
@@ -224,14 +227,4 @@ mod tests {
         // println!("decrypting...");
         // let decrypted_cond: Vec<u8> = decrypt_vec(encrypted_cond, client_key);
     }
-
-    // #[test]
-    // fn load_db() {
-    //     let db_dir_path = "db_dir";
-    //     let tables = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
-    //     let (name0, table0) = &tables.0[0];
-    //     let (name1, table1) = &tables.0[1];
-    //     println!("{name0}\n{table0:?}");
-    //     println!("\n{name1}\n{table1:?}");
-    // }
 }
