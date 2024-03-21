@@ -133,15 +133,6 @@ mod tests {
     use super::*;
     // use query::*;
 
-    // #[test]
-    // fn test_switch_sign() {
-    //     use tfhe::core_crypto::commons::traits::UnsignedInteger;
-    //     let minus_one = -1i8;
-    //     let unsigned = (minus_one as u32) ^ (1 << 31);
-    //     println!("{}", unsigned.to_bits_string(4));
-    //     assert!(false);
-    // }
-
     #[test]
     fn encrypt_u8() {
         println!("generating FHE keys...");
@@ -193,14 +184,4 @@ mod tests {
         // println!("decrypting...");
         // let decrypted_cond: Vec<u8> = decrypt_vec(encrypted_cond, client_key);
     }
-
-    // #[test]
-    // fn load_db() {
-    //     let db_dir_path = "db_dir";
-    //     let tables = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
-    //     let (name0, table0) = &tables.0[0];
-    //     let (name1, table1) = &tables.0[1];
-    //     println!("{name0}\n{table0:?}");
-    //     println!("\n{name1}\n{table1:?}");
-    // }
 }

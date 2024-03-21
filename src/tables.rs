@@ -339,7 +339,8 @@ impl EncodedTable {
 /// Updates a lookup table at the given index.
 ///
 /// The argument `ct` is used internally to encode/decode indices. It should be the same
-/// as the one used for `generate_lut_radix`.
+/// as the one used for `generate_lut_radix`. This function is mostly a copy-paste of the
+/// method `WopbsKey::generate_lut_radix()`.
 fn update_lut(
     index: usize,
     value: u32,
@@ -383,6 +384,7 @@ pub struct Tables {
     pub tables: Vec<(String, Table)>,
 }
 
+/// Parse headers of a csv file.
 fn read_headers(path: PathBuf) -> TableHeaders {
     let header = read_to_string(path)
         .unwrap()
@@ -460,24 +462,23 @@ mod tests {
     }
 
     #[test]
-    fn udpate_lookup_table() {
+    fn update_lookup_table() {
         let (ck, sk, wopbs_key) = generate_keys();
         let ct_entry_length: RadixCiphertext = sk.create_trivial_radix(8u64, 4);
         let f = |u: u64| -> u64 { u + 5 };
         let mut lut = wopbs_key.generate_lut_radix(&ct_entry_length, f);
-        // update_lut(0, 3, &mut lut, &ct_entry_length, &wopbs_key);
+        update_lut(1, 3, &mut lut, &ct_entry_length, &wopbs_key);
         let apply_lut = |encrypted_id: &RadixCiphertext| -> RadixCiphertext {
             let ct = wopbs_key.keyswitch_to_wopbs_params(&sk, encrypted_id);
             let ct_res = wopbs_key.wopbs(&ct, &lut);
             wopbs_key.keyswitch_to_pbs_params(&ct_res)
         };
-        let lut_at_2 = apply_lut(&sk.create_trivial_radix(2u64, 4));
+        // let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
         let lut_at_1 = apply_lut(&sk.create_trivial_radix(1u64, 4));
-        let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
-        // let lut_at_1 = apply_lut(&sk.create_trivial_radix(1u64, 4));
+        let lut_at_2 = apply_lut(&sk.create_trivial_radix(2u64, 4));
         let clear1: u32 = ck.decrypt(&lut_at_1);
         let clear2: u32 = ck.decrypt(&lut_at_2);
-        assert_eq!(clear1, 6);
+        assert_eq!(clear1, 3);
         assert_eq!(clear2, 7);
     }
 }
