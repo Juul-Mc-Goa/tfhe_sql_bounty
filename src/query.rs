@@ -186,6 +186,9 @@ pub enum WhereSyntaxTree {
 }
 
 /// A type alias for storing (the encryption of) a `WHERE` syntax tree in disjunctive normal form.
+///
+/// It is a vector of `(op, atom)` where `op` is a boolean for choosing between AND and OR,
+/// and `atom` is an atomic condition.
 pub type EncryptedSyntaxTree = Vec<(Ciphertext, EncryptedAtom)>;
 
 /// Builds a `WhereSyntaxTree` from a `sqlparser::Expr`. This is used to discard all

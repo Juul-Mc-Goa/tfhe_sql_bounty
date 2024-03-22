@@ -1,12 +1,12 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
-use tfhe::integer::wopbs::{IntegerWopbsLUT, WopbsKey};
-use tfhe::integer::{
-    BooleanBlock, ClientKey, IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, ServerKey,
-};
+use tfhe::integer::wopbs::WopbsKey;
+use tfhe::integer::{BooleanBlock, ClientKey, RadixCiphertext, ServerKey};
+use tfhe::shortint::wopbs::WopbsKey as InnerWopbsKey;
 use tfhe::shortint::Ciphertext;
 
-use crate::{EncryptedAtom, EncryptedSyntaxTree};
+use crate::cipher_structs::{FheBool, UpdatableLUT};
+use crate::EncryptedSyntaxTree;
 
 /// An enum with one variant for each possible type of a cell's content.
 #[derive(Debug, Clone)]
@@ -170,14 +170,6 @@ impl TableHeaders {
         }
         Err(format!("column '{column}' does not exist"))
     }
-    // fn type_of(&self, column: String) -> Result<CellType, String> {
-    //     for (label, cell_type) in self.0.iter() {
-    //         if label == &column {
-    //             return Ok(cell_type.clone());
-    //         }
-    //     }
-    //     Err(format!("column '{column}' does not exist"))
-    // }
 }
 
 /// A representation of a SQL table.
@@ -190,14 +182,22 @@ pub struct Table {
 /// An encoded representation of a SQL table.
 ///
 /// Each entry is stored as a `Vec<u32>`. A table is a vector of entries.
-#[derive(Debug)]
-pub struct EncodedTable {
+// #[derive(Debug)]
+pub struct TableQueryRunner<'a> {
     pub headers: TableHeaders,
     pub content: Vec<Vec<u32>>,
+    pub server_key: &'a ServerKey,
+    pub wopbs_key: &'a WopbsKey,
+    pub wopbs_inner: &'a InnerWopbsKey,
 }
 
-impl From<Table> for EncodedTable {
-    fn from(table: Table) -> Self {
+impl<'a> TableQueryRunner<'a> {
+    pub fn new(
+        table: Table,
+        server_key: &'a ServerKey,
+        wopbs_key: &'a WopbsKey,
+        wopbs_inner: &'a InnerWopbsKey,
+    ) -> Self {
         Self {
             headers: table.headers.clone(),
             content: table
@@ -205,105 +205,92 @@ impl From<Table> for EncodedTable {
                 .iter()
                 .map(|entry| entry.iter().map(|cell| cell.encode()).flatten().collect())
                 .collect::<Vec<Vec<u32>>>(),
+            server_key,
+            wopbs_key,
+            wopbs_inner,
         }
     }
-}
 
-impl EncodedTable {
-    fn run_query_on_entry(
-        &self,
-        entry: &Vec<u32>,
-        query: &EncryptedSyntaxTree,
-        server_key: &ServerKey,
-        wopbs_key: &WopbsKey,
-    ) -> Ciphertext {
+    /// Runs an encrypted query on a given entry.
+    ///
+    /// Returns a Ciphertext encrypting a boolean that answers the question: "Is this entry
+    /// selected by the query?"
+    ///
+    /// The encrypted boolean is actually an integer modulo 2, so that:
+    /// - `a AND b` becomes `a*b`,
+    /// - `a XOR b` becomes `a+b`,
+    /// - `a OR b` becomes `a+b+a*b`,
+    /// - `NOT a` becomes `1+a`.
+    /// Then the boolean formulas are simplified so as to minimize the number of
+    /// multiplications, and using the fact that addition is much faster than PBS.
+    fn run_query_on_entry(&self, entry: &Vec<u32>, query: &EncryptedSyntaxTree) -> Ciphertext {
+        let server_key = self.server_key;
+        let wopbs_key = self.wopbs_key;
+        let wopbs_inner = self.wopbs_inner;
+
+        let lut = UpdatableLUT::new(entry, server_key, wopbs_key, wopbs_inner);
+
+        let new_fhe_bool = |ct: Ciphertext| FheBool { ct, server_key };
+        let mut result_bool =
+            new_fhe_bool(server_key.create_trivial_boolean_block(true).into_inner());
+
+        let is_lt = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
+            new_fhe_bool(server_key.lt_parallelized(a, b).into_inner())
+        };
+
+        let is_eq = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
+            new_fhe_bool(server_key.eq_parallelized(a, b).into_inner())
+        };
+
         if query.is_empty() {
-            return server_key
-                .create_trivial_radix::<u64, RadixCiphertext>(1u64, 1)
-                .into_blocks()[0]
-                .clone();
+            // if the condition is empty then return true
+            return result_bool.ct;
+        } else if query.len() == 1 {
+            // if the condition is just one atom then return the atom boolean
+            let (_, (index, val, is_leq, negate)) = &query[0];
+
+            let op_is_leq: FheBool = new_fhe_bool(is_leq.clone());
+            let current_value = lut.apply(index);
+
+            // atom_bool = is_leq * (current_val < val) + (current_val == val) + negate
+            let result = (op_is_leq * is_lt(&current_value, &val))
+                + is_eq(&current_value, &val)
+                + new_fhe_bool(negate.clone());
+
+            return result.ct;
         }
-        let entry_length = entry.len();
-        // the server_key.generate_lut_radix() method needs a ciphertext for
-        // computing the lut size. We use num_blocks = 4, i.e. we assume the
-        // total number of columns in a table is lower than 4^4 = 256.
-        let ct_entry_length: RadixCiphertext =
-            server_key.create_trivial_radix(entry_length as u64, 4);
-        let f = |u: u64| -> u64 {
-            let v = u as usize;
-            if v < entry_length {
-                entry[v] as u64
-            } else {
-                0
-            }
-        };
-        let lut = wopbs_key.generate_lut_radix(&ct_entry_length, f);
 
-        // convenience closure for looking up an entry's cell content from an encrypted index
-        let column_id_lut = |encrypted_id: &RadixCiphertext| -> RadixCiphertext {
-            let ct = wopbs_key.keyswitch_to_wopbs_params(&server_key, encrypted_id);
-            let ct_res = wopbs_key.wopbs(&ct, &lut);
-            wopbs_key.keyswitch_to_pbs_params(&ct_res)
-        };
-        // convenience closure for negating a bool
-        let negate_bool =
-            |b: &RadixCiphertext| -> RadixCiphertext { server_key.unchecked_scalar_add(&b, 1) };
-        // convenience closure for adding bools
-        let add_bool = |b1: &RadixCiphertext, b2: &RadixCiphertext| -> RadixCiphertext {
-            server_key.unchecked_add_parallelized(&b1, &b2)
-        };
-        // convenience closure for multiplying bools
-        let mul_bool = |b1: &RadixCiphertext, b2: &RadixCiphertext| -> RadixCiphertext {
-            server_key.unchecked_mul_parallelized(&b1, &b2)
-        };
-        let boolean_to_radix =
-            |b: BooleanBlock| -> RadixCiphertext { b.into_radix(1, &server_key) };
-        let ct_to_radix =
-            |ct: Ciphertext| -> RadixCiphertext { RadixCiphertext::from_blocks(vec![ct]) };
+        // else, loop through all atoms
 
-        // run an encrypted atomic query
-        let compute_atom = |encrypted_atom: &EncryptedAtom| {
+        // initialize current_and_clause to be the first (boolean valued) op
+        let mut current_and_clause = new_fhe_bool(query[0].0.clone());
+
+        for (op, encrypted_atom) in query.iter() {
             let (index, val, is_leq, negate) = encrypted_atom;
-            let current_val = column_id_lut(&index);
-            // is_leq * (current_val < val) + (current_val == val) + negate
-            add_bool(
-                &add_bool(
-                    &mul_bool(
-                        &ct_to_radix(is_leq.clone()),
-                        &boolean_to_radix(server_key.lt_parallelized(&current_val, val)),
-                    ),
-                    &boolean_to_radix(server_key.eq_parallelized(&current_val, val)),
-                ),
-                &ct_to_radix(negate.clone()),
-            )
-        };
 
-        let mut result_bool = server_key.create_trivial_radix(0u64, 1);
-        let mut current_and_clause = compute_atom(&query[0].1);
-        for (op, encrypted_atom) in query {
-            let op_radix = ct_to_radix(op.clone());
-            let atom_bool = compute_atom(encrypted_atom);
+            let current_value = lut.apply(index);
+            let op_is_leq: FheBool = new_fhe_bool(is_leq.clone());
+
+            // atom_bool = is_leq * (current_val < val) + (current_val == val) + negate
+            let atom_bool = op_is_leq * is_lt(&current_value, &val)
+                + is_eq(&current_value, &val)
+                + new_fhe_bool(negate.clone());
+
             // result_bool:
             //   | if !op: result_bool OR current_and_clause
             //   | else: result_bool
             // so we get:
             // result_bool = (op AND result_bool) XOR (!op AND (result_bool OR current_and_clause))
-            // We then replace:
-            // - a XOR b by a+b,
-            // - a AND b by a*b,
-            // - a OR b by a+b+a*b,
-            // - !a by 1+a,
             // and compute modulo 2:
             // result_bool = op * result_bool + (1 + op) * (result_bool + current_and_clause
             //                                              + result_bool * current_and_clause)
             //             = result_bool + (1 + op) * current_and_clause * (1 + result_bool)
 
-            // we need to create a temporary value so that rust's borrow checker doesn't throw an error
-            let temp_bool = mul_bool(
-                &negate_bool(&op_radix),
-                &mul_bool(&current_and_clause, &negate_bool(&result_bool)),
-            );
-            server_key.add_assign_parallelized(&mut result_bool, &temp_bool);
+            // (create a temporary value so that the borrow checker doesn't throw an error)
+            let op_fhe_bool = new_fhe_bool(op.clone());
+            let temp_bool = &!&op_fhe_bool * &current_and_clause * !&result_bool;
+            result_bool += &temp_bool;
+
             // current_and_clause:
             //   | if op: (current_and_clause AND atom_bool)
             //   | else: atom_bool
@@ -312,75 +299,24 @@ impl EncodedTable {
             // and compute modulo 2:
             // current_and_clause = (op * current_and_clause * atom_bool) + (1 + op) * atom_bool
             //                    = atom_bool * (1 + op * (1 + current_and_clause))
-            current_and_clause = mul_bool(
-                &atom_bool,
-                &negate_bool(&mul_bool(&op_radix, &negate_bool(&current_and_clause))),
-            );
+            current_and_clause = atom_bool * !(op_fhe_bool * !current_and_clause);
         }
-        server_key
-            .scalar_rem_parallelized(&result_bool, 2u8)
-            .into_blocks()[0]
-            .clone()
+        result_bool.ct
     }
-    pub fn run_fhe_query(
-        &self,
-        query: &EncryptedSyntaxTree,
-        server_key: &ServerKey,
-        wopbs_key: &WopbsKey,
-    ) -> Vec<Ciphertext> {
+
+    pub fn run_fhe_query(&self, query: &EncryptedSyntaxTree) -> Vec<Ciphertext> {
         // iterate through each entry
         self.content
             .iter()
-            .map(|entry| self.run_query_on_entry(entry, query, server_key, wopbs_key))
+            .map(|entry| self.run_query_on_entry(entry, query))
             .collect()
     }
 }
 
-/// Updates a lookup table at the given index.
-///
-/// The argument `ct` is used internally to encode/decode indices. It should be the same
-/// as the one used for `generate_lut_radix`. This function is mostly a copy-paste of the
-/// method `WopbsKey::generate_lut_radix()`.
-fn update_lut(
-    index: usize,
-    value: u32,
-    lut: &mut IntegerWopbsLUT,
-    ct: &RadixCiphertext,
-    wopbs_key: &WopbsKey,
-) {
-    use tfhe::integer::wopbs::{decode_radix, encode_mix_radix, encode_radix};
-    let value = value as u64;
-
-    let basis = ct.moduli()[0];
-    let block_nb = ct.blocks().len();
-    let wopbs_inner = wopbs_key.clone().into_raw_parts();
-    let (wopbs_message_modulus, wopbs_carry_modulus) = (
-        wopbs_inner.param.message_modulus.0,
-        wopbs_inner.param.carry_modulus.0,
-    );
-    let delta: u64 = (1 << 63) / (wopbs_message_modulus * wopbs_carry_modulus) as u64;
-    let mut vec_deg_basis = vec![];
-
-    let mut modulus = 1;
-    for (i, deg) in ct.moduli().iter().zip(ct.blocks().iter()) {
-        modulus *= i;
-        let b = f64::log2((deg.degree.get() + 1) as f64).ceil() as u64;
-        vec_deg_basis.push(b);
-    }
-
-    let encoded_with_deg_val = encode_mix_radix(index as u64, &vec_deg_basis, basis);
-    let decoded_val = decode_radix(&encoded_with_deg_val, basis);
-    let f_val = value % modulus;
-    let encoded_f_val = encode_radix(f_val, basis, block_nb as u64);
-    for (lut_number, radix_encoded_val) in encoded_f_val.iter().enumerate().take(block_nb) {
-        lut[lut_number][index] = radix_encoded_val * delta;
-    }
-}
-
-/// A vector of tuples `(table_name, table)`.
+/// A vector of tuples `(table_name, table)`, plus a `ServerKey` and a `WopbsKey`.
 pub struct Tables {
     pub server_key: ServerKey,
-    pub wopbs_key: WopbsKey,
+    pub wopbs_key: InnerWopbsKey,
     pub tables: Vec<(String, Table)>,
 }
 
@@ -414,7 +350,7 @@ fn read_headers(path: PathBuf) -> TableHeaders {
 pub fn load_tables(
     path: PathBuf,
     server_key: ServerKey,
-    wopbs_key: WopbsKey,
+    wopbs_key: InnerWopbsKey,
 ) -> Result<Tables, Box<dyn std::error::Error>> {
     let mut result: Vec<(String, Table)> = Vec::new();
     let db_path = fs::read_dir(path).expect("Database path error: can't read directory {path}");
@@ -424,9 +360,11 @@ pub fn load_tables(
             .file_stem()
             .and_then(|f| f.to_str().map(|os_str| String::from(os_str)))
             .expect("file name error {table_path}");
+
         let headers = read_headers(table_path.clone());
         let mut rdr = csv::Reader::from_path(table_path)?;
         let mut content: Vec<Vec<CellContent>> = Vec::new();
+
         for entry in rdr.records() {
             let mut entry_content: Vec<CellContent> = Vec::with_capacity(headers.0.len());
             let inner_entry = entry.unwrap();
@@ -467,17 +405,22 @@ mod tests {
         let ct_entry_length: RadixCiphertext = sk.create_trivial_radix(8u64, 4);
         let f = |u: u64| -> u64 { u + 5 };
         let mut lut = wopbs_key.generate_lut_radix(&ct_entry_length, f);
-        update_lut(1, 3, &mut lut, &ct_entry_length, &wopbs_key);
+
+        let wopbs_inner = wopbs_key.clone().into_raw_parts();
+        update_lut(1, 3, &mut lut, &ct_entry_length, &wopbs_inner);
+
         let apply_lut = |encrypted_id: &RadixCiphertext| -> RadixCiphertext {
             let ct = wopbs_key.keyswitch_to_wopbs_params(&sk, encrypted_id);
             let ct_res = wopbs_key.wopbs(&ct, &lut);
             wopbs_key.keyswitch_to_pbs_params(&ct_res)
         };
+
         // let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
         let lut_at_1 = apply_lut(&sk.create_trivial_radix(1u64, 4));
         let lut_at_2 = apply_lut(&sk.create_trivial_radix(2u64, 4));
         let clear1: u32 = ck.decrypt(&lut_at_1);
         let clear2: u32 = ck.decrypt(&lut_at_2);
+
         assert_eq!(clear1, 3);
         assert_eq!(clear2, 7);
     }
