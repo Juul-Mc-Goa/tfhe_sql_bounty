@@ -222,24 +222,20 @@ impl<'a> TableQueryRunner<'a> {
     /// - `a OR b` becomes `a+b+a*b`,
     /// - `NOT a` becomes `1+a`.
     /// Then the boolean formulas are simplified so as to minimize the number of
-    /// multiplications, and using the fact that addition is much faster than PBS.
+    /// multiplications, using the fact that addition is much faster than PBS.
     fn run_query_on_entry(&self, entry: &Vec<u32>, query: &EncryptedSyntaxTree) -> Ciphertext {
-        let server_key = self.server_key;
-        let wopbs_key = self.wopbs_key;
-        let wopbs_inner = self.wopbs_inner;
+        let sk = self.server_key;
+        let lut = UpdatableLUT::new(entry, sk, self.wopbs_key, self.wopbs_inner);
 
-        let lut = UpdatableLUT::new(entry, server_key, wopbs_key, wopbs_inner);
-
-        let new_fhe_bool = |ct: Ciphertext| FheBool { ct, server_key };
-        let mut result_bool =
-            new_fhe_bool(server_key.create_trivial_boolean_block(true).into_inner());
+        let new_fhe_bool = |ct: Ciphertext| FheBool { ct, server_key: sk };
+        let mut result_bool = new_fhe_bool(sk.create_trivial_boolean_block(true).into_inner());
 
         let is_lt = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
-            new_fhe_bool(server_key.lt_parallelized(a, b).into_inner())
+            new_fhe_bool(sk.lt_parallelized(a, b).into_inner())
         };
 
         let is_eq = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
-            new_fhe_bool(server_key.eq_parallelized(a, b).into_inner())
+            new_fhe_bool(sk.eq_parallelized(a, b).into_inner())
         };
 
         if query.is_empty() {
