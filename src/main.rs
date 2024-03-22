@@ -129,11 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-
-    use tfhe::boolean::client_key;
-
     use super::*;
-    // use query::*;
 
 <<<<<<< HEAD
     fn keygen() -> (ClientKey, ServerKey) {

@@ -104,24 +104,17 @@ impl<'a> UpdatableLUT<'a> {
         RadixCiphertext::from_blocks(result)
     }
 
-    fn retrieve_lut_and_fix_index(&mut self, index: usize) -> (&mut IntegerWopbsLUT, usize) {
-        if index >= (1 << 24) {
-            (&mut self.lut.3, index - (1 << 24))
-        } else if index >= (1 << 16) {
-            (&mut self.lut.2, index - (1 << 16))
-        } else if index >= (1 << 8) {
-            (&mut self.lut.1, index - (1 << 8))
-        } else {
-            (&mut self.lut.0, index)
-        }
-    }
-
     /// Updates a lookup table at the given index.
     ///
     /// This method is mostly a copy-paste of `WopbsKey::generate_lut_radix()`.
     pub fn update(&mut self, index: u8, value: u32) {
         let index = index as usize;
-        let value = value as u64;
+        let value = (
+            (value % 255) as u64,
+            ((value >> 8) % 255) as u64,
+            ((value >> 16) % 255) as u64,
+            ((value >> 24) % 255) as u64,
+        );
 
         let basis = self.max_argument.moduli()[0];
         let block_nb = self.max_argument.blocks().len();
@@ -144,11 +137,23 @@ impl<'a> UpdatableLUT<'a> {
             vec_deg_basis.push(b);
         }
 
-        let f_val = value % modulus;
-        let encoded_f_val = encode_radix(f_val, basis, block_nb as u64);
-        let (lut, index) = self.retrieve_lut_and_fix_index(index);
-        for (lut_number, radix_encoded_val) in encoded_f_val.iter().enumerate().take(block_nb) {
-            lut[lut_number][index] = radix_encoded_val * delta;
+        let f_val = (
+            value.0 % modulus,
+            value.1 % modulus,
+            value.2 % modulus,
+            value.3 % modulus,
+        );
+        let encoded_f_val_iter = encode_radix(f_val.0, basis, block_nb as u64)
+            .into_iter()
+            .zip(encode_radix(f_val.1, basis, block_nb as u64).into_iter())
+            .zip(encode_radix(f_val.2, basis, block_nb as u64).into_iter())
+            .zip(encode_radix(f_val.3, basis, block_nb as u64).into_iter());
+        for (lut_number, radix_encoded_val) in encoded_f_val_iter.enumerate().take(block_nb) {
+            let (((v0, v1), v2), v3) = radix_encoded_val;
+            self.lut.0[lut_number][index] = v0 * delta;
+            self.lut.1[lut_number][index] = v1 * delta;
+            self.lut.2[lut_number][index] = v2 * delta;
+            self.lut.3[lut_number][index] = v3 * delta;
         }
     }
 }
@@ -312,15 +317,54 @@ mod tests {
     use crate::generate_keys;
 
     #[test]
-    fn xor_two_fhe_bool() {
+    fn add_two_fhe_bool() {
         let (ck, sk, _wopbs_key, _wopbs_params) = generate_keys();
         let b1 = FheBool::encrypt(true, &ck, &sk);
         let b2 = FheBool::encrypt(true, &ck, &sk);
 
         let xor = b1 + b2;
-        let clear_xor = ck.decrypt_bool(&xor.clone().into_boolean_block());
+        let clear_xor = ck.decrypt_bool(&xor.into_boolean_block());
         assert_eq!(clear_xor, false);
-        // let clear_xor_int = ck.decrypt_one_block(&xor.ct);
-        // assert_eq!(clear_xor_int, 0);
+    }
+
+    #[test]
+    fn mul_two_fhe_bool() {
+        let (ck, sk, _wopbs_key, _wopbs_params) = generate_keys();
+        let b1 = FheBool::encrypt(true, &ck, &sk);
+        let b2 = FheBool::encrypt(false, &ck, &sk);
+
+        let and = b1 * b2;
+        let clear_and = ck.decrypt_bool(&and.into_boolean_block());
+        assert_eq!(clear_and, false);
+    }
+
+    #[test]
+    fn mix_two_fhe_bool() {
+        let (ck, sk, _wopbs_key, _wopbs_params) = generate_keys();
+        let b1 = FheBool::encrypt(true, &ck, &sk);
+        let b2 = FheBool::encrypt(true, &ck, &sk);
+
+        let xor = &b1 + &b2;
+        let result = b1 * xor;
+        let clear_result = ck.decrypt_bool(&result.into_boolean_block());
+        assert_eq!(clear_result, false);
+    }
+
+    #[test]
+    fn update_lookup_table() {
+        let (ck, sk, wopbs_key, wopbs_params) = generate_keys();
+        let entry: Vec<u32> = vec![2, 3, 4, 5, 6];
+        let mut lut = UpdatableLUT::new(&entry, &sk, &wopbs_key, wopbs_params);
+
+        lut.update(1, 7);
+
+        // let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
+        let lut_at_1 = lut.apply(&sk.create_trivial_radix(1u64, 4));
+        let lut_at_2 = lut.apply(&sk.create_trivial_radix(2u64, 4));
+        let clear1: u32 = ck.decrypt(&lut_at_1);
+        let clear2: u32 = ck.decrypt(&lut_at_2);
+
+        assert_eq!(clear1, 7);
+        assert_eq!(clear2, 4);
     }
 }

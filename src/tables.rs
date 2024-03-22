@@ -382,21 +382,21 @@ mod tests {
     use super::*;
     use crate::generate_keys;
 
-    #[test]
-    fn update_lookup_table() {
-        let (ck, sk, wopbs_key, wopbs_params) = generate_keys();
-        let entry: Vec<u32> = vec![2, 3, 4, 5, 6];
-        let mut lut = UpdatableLUT::new(&entry, &sk, &wopbs_key, wopbs_params);
+    // #[test]
+    // fn update_lookup_table() {
+    //     let (ck, sk, wopbs_key, wopbs_params) = generate_keys();
+    //     let entry: Vec<u32> = vec![2, 3, 4, 5, 6];
+    //     let mut lut = UpdatableLUT::new(&entry, &sk, &wopbs_key, wopbs_params);
 
-        lut.update(1, 0);
+    //     lut.update(1, 0);
 
-        // let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
-        let lut_at_1 = lut.apply(&sk.create_trivial_radix(1u64, 4));
-        let lut_at_2 = lut.apply(&sk.create_trivial_radix(2u64, 4));
-        let clear1: u32 = ck.decrypt(&lut_at_1);
-        let clear2: u32 = ck.decrypt(&lut_at_2);
+    //     // let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
+    //     let lut_at_1 = lut.apply(&sk.create_trivial_radix(1u64, 4));
+    //     let lut_at_2 = lut.apply(&sk.create_trivial_radix(2u64, 4));
+    //     let clear1: u32 = ck.decrypt(&lut_at_1);
+    //     let clear2: u32 = ck.decrypt(&lut_at_2);
 
-        assert_eq!(clear1, 0);
-        assert_eq!(clear2, 4);
-    }
+    //     assert_eq!(clear1, 0);
+    //     assert_eq!(clear2, 4);
+    // }
 }
