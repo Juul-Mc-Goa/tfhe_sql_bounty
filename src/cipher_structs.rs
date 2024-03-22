@@ -3,13 +3,13 @@ use tfhe::core_crypto::algorithms::lwe_linear_algebra::lwe_ciphertext_plaintext_
 use tfhe::core_crypto::entities::Plaintext;
 
 use tfhe::shortint::ciphertext::Degree;
-use tfhe::shortint::wopbs::WopbsKey as InnerWopbsKey;
-use tfhe::shortint::Ciphertext;
+use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 use tfhe::integer::wopbs::encode_radix;
 use tfhe::integer::wopbs::{IntegerWopbsLUT, WopbsKey};
 use tfhe::integer::{
-    BooleanBlock, IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, ServerKey,
+    BooleanBlock, IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, RadixClientKey,
+    ServerKey,
 };
 
 use std::ops::{Add, AddAssign, Mul, Not};
@@ -26,7 +26,7 @@ pub struct UpdatableLUT<'a> {
     ),
     server_key: &'a ServerKey,
     wopbs_key: &'a WopbsKey,
-    wopbs_inner: &'a InnerWopbsKey,
+    wopbs_parameters: WopbsParameters,
 }
 
 impl<'a> UpdatableLUT<'a> {
@@ -34,7 +34,7 @@ impl<'a> UpdatableLUT<'a> {
         entry: &'a Vec<u32>,
         server_key: &'a ServerKey,
         wopbs_key: &'a WopbsKey,
-        wopbs_inner: &'a InnerWopbsKey,
+        wopbs_parameters: WopbsParameters,
     ) -> Self {
         let entry_length = entry.len();
         // the server_key.generate_lut_radix() method needs a ciphertext for
@@ -68,7 +68,7 @@ impl<'a> UpdatableLUT<'a> {
             lut,
             server_key,
             wopbs_key,
-            wopbs_inner,
+            wopbs_parameters,
         }
     }
 
@@ -126,8 +126,8 @@ impl<'a> UpdatableLUT<'a> {
         let basis = self.max_argument.moduli()[0];
         let block_nb = self.max_argument.blocks().len();
         let (wopbs_message_modulus, wopbs_carry_modulus) = (
-            self.wopbs_inner.param.message_modulus.0,
-            self.wopbs_inner.param.carry_modulus.0,
+            self.wopbs_parameters.message_modulus.0,
+            self.wopbs_parameters.carry_modulus.0,
         );
         let delta: u64 = (1 << 63) / (wopbs_message_modulus * wopbs_carry_modulus) as u64;
         let mut vec_deg_basis = vec![];
@@ -167,6 +167,25 @@ impl<'a> UpdatableLUT<'a> {
 pub struct FheBool<'a> {
     pub ct: Ciphertext,
     pub server_key: &'a ServerKey,
+}
+
+impl<'a> FheBool<'a> {
+    pub fn encrypt(val: bool, client_key: &'a RadixClientKey, server_key: &'a ServerKey) -> Self {
+        Self {
+            ct: client_key.encrypt_bool(val).into_inner(),
+            server_key,
+        }
+    }
+
+    pub fn into_boolean_block(self) -> BooleanBlock {
+        let radix_ct = RadixCiphertext::from_blocks(vec![self.ct]);
+        BooleanBlock::new_unchecked(
+            self.server_key
+                .unchecked_scalar_bitand_parallelized(&radix_ct, 1)
+                .into_blocks()[0]
+                .clone(),
+        )
+    }
 }
 
 /// Implements negation for `&FheBool`.
@@ -250,7 +269,7 @@ impl<'a> Add<FheBool<'a>> for FheBool<'a> {
     }
 }
 
-/// Multiplies two booleans.
+/// Multiplies two `&FheBool`.
 ///
 /// Uses the `integer::ServerKey::boolean_bitand` method.
 impl<'a, 'b, 'c> Mul<&'c FheBool<'a>> for &'b FheBool<'a> {
@@ -269,7 +288,7 @@ impl<'a, 'b, 'c> Mul<&'c FheBool<'a>> for &'b FheBool<'a> {
     }
 }
 
-/// Multiplies two booleans.
+/// Multiplies two `FheBool`.
 ///
 /// Uses the `integer::ServerKey::boolean_bitand` method.
 impl<'a> Mul<FheBool<'a>> for FheBool<'a> {
@@ -285,5 +304,23 @@ impl<'a> Mul<FheBool<'a>> for FheBool<'a> {
                 .into_inner(),
             server_key: self.server_key,
         }
+    }
+}
+
+mod tests {
+    use super::*;
+    use crate::generate_keys;
+
+    #[test]
+    fn xor_two_fhe_bool() {
+        let (ck, sk, _wopbs_key, _wopbs_params) = generate_keys();
+        let b1 = FheBool::encrypt(true, &ck, &sk);
+        let b2 = FheBool::encrypt(true, &ck, &sk);
+
+        let xor = b1 + b2;
+        let clear_xor = ck.decrypt_bool(&xor.clone().into_boolean_block());
+        assert_eq!(clear_xor, false);
+        // let clear_xor_int = ck.decrypt_one_block(&xor.ct);
+        // assert_eq!(clear_xor_int, 0);
     }
 }

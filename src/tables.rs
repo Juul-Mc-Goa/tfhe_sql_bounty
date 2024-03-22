@@ -1,9 +1,8 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 use tfhe::integer::wopbs::WopbsKey;
-use tfhe::integer::{BooleanBlock, ClientKey, RadixCiphertext, ServerKey};
-use tfhe::shortint::wopbs::WopbsKey as InnerWopbsKey;
-use tfhe::shortint::Ciphertext;
+use tfhe::integer::{ClientKey, RadixCiphertext, ServerKey};
+use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 use crate::cipher_structs::{FheBool, UpdatableLUT};
 use crate::EncryptedSyntaxTree;
@@ -188,7 +187,7 @@ pub struct TableQueryRunner<'a> {
     pub content: Vec<Vec<u32>>,
     pub server_key: &'a ServerKey,
     pub wopbs_key: &'a WopbsKey,
-    pub wopbs_inner: &'a InnerWopbsKey,
+    pub wopbs_parameters: WopbsParameters,
 }
 
 impl<'a> TableQueryRunner<'a> {
@@ -196,7 +195,7 @@ impl<'a> TableQueryRunner<'a> {
         table: Table,
         server_key: &'a ServerKey,
         wopbs_key: &'a WopbsKey,
-        wopbs_inner: &'a InnerWopbsKey,
+        wopbs_parameters: WopbsParameters,
     ) -> Self {
         Self {
             headers: table.headers.clone(),
@@ -207,7 +206,7 @@ impl<'a> TableQueryRunner<'a> {
                 .collect::<Vec<Vec<u32>>>(),
             server_key,
             wopbs_key,
-            wopbs_inner,
+            wopbs_parameters,
         }
     }
 
@@ -225,7 +224,7 @@ impl<'a> TableQueryRunner<'a> {
     /// multiplications, using the fact that addition is much faster than PBS.
     fn run_query_on_entry(&self, entry: &Vec<u32>, query: &EncryptedSyntaxTree) -> Ciphertext {
         let sk = self.server_key;
-        let lut = UpdatableLUT::new(entry, sk, self.wopbs_key, self.wopbs_inner);
+        let lut = UpdatableLUT::new(entry, sk, self.wopbs_key, self.wopbs_parameters.clone());
 
         let new_fhe_bool = |ct: Ciphertext| FheBool { ct, server_key: sk };
         let mut result_bool = new_fhe_bool(sk.create_trivial_boolean_block(true).into_inner());
@@ -312,7 +311,7 @@ impl<'a> TableQueryRunner<'a> {
 /// A vector of tuples `(table_name, table)`, plus a `ServerKey` and a `WopbsKey`.
 pub struct Tables {
     pub server_key: ServerKey,
-    pub wopbs_key: InnerWopbsKey,
+    pub wopbs_key: WopbsKey,
     pub tables: Vec<(String, Table)>,
 }
 
@@ -346,7 +345,7 @@ fn read_headers(path: PathBuf) -> TableHeaders {
 pub fn load_tables(
     path: PathBuf,
     server_key: ServerKey,
-    wopbs_key: InnerWopbsKey,
+    wopbs_key: WopbsKey,
 ) -> Result<Tables, Box<dyn std::error::Error>> {
     let mut result: Vec<(String, Table)> = Vec::new();
     let db_path = fs::read_dir(path).expect("Database path error: can't read directory {path}");
@@ -381,43 +380,23 @@ pub fn load_tables(
 
 mod tests {
     use super::*;
-    use tfhe::{
-        integer::{gen_keys_radix, RadixClientKey},
-        shortint::{
-            parameters::parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            prelude::PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-        },
-    };
-
-    fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey) {
-        let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
-        let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS);
-        (ck, sk, wopbs_key)
-    }
+    use crate::generate_keys;
 
     #[test]
     fn update_lookup_table() {
-        let (ck, sk, wopbs_key) = generate_keys();
-        let ct_entry_length: RadixCiphertext = sk.create_trivial_radix(8u64, 4);
-        let f = |u: u64| -> u64 { u + 5 };
-        let mut lut = wopbs_key.generate_lut_radix(&ct_entry_length, f);
+        let (ck, sk, wopbs_key, wopbs_params) = generate_keys();
+        let entry: Vec<u32> = vec![2, 3, 4, 5, 6];
+        let mut lut = UpdatableLUT::new(&entry, &sk, &wopbs_key, wopbs_params);
 
-        let wopbs_inner = wopbs_key.clone().into_raw_parts();
-        update_lut(1, 3, &mut lut, &ct_entry_length, &wopbs_inner);
-
-        let apply_lut = |encrypted_id: &RadixCiphertext| -> RadixCiphertext {
-            let ct = wopbs_key.keyswitch_to_wopbs_params(&sk, encrypted_id);
-            let ct_res = wopbs_key.wopbs(&ct, &lut);
-            wopbs_key.keyswitch_to_pbs_params(&ct_res)
-        };
+        lut.update(1, 0);
 
         // let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
-        let lut_at_1 = apply_lut(&sk.create_trivial_radix(1u64, 4));
-        let lut_at_2 = apply_lut(&sk.create_trivial_radix(2u64, 4));
+        let lut_at_1 = lut.apply(&sk.create_trivial_radix(1u64, 4));
+        let lut_at_2 = lut.apply(&sk.create_trivial_radix(2u64, 4));
         let clear1: u32 = ck.decrypt(&lut_at_1);
         let clear2: u32 = ck.decrypt(&lut_at_2);
 
-        assert_eq!(clear1, 3);
-        assert_eq!(clear2, 7);
+        assert_eq!(clear1, 0);
+        assert_eq!(clear2, 4);
     }
 }

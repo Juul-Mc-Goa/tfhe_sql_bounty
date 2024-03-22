@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use tfhe::integer::gen_keys_radix;
 use tfhe::integer::{wopbs::WopbsKey, RadixClientKey, ServerKey};
-use tfhe::shortint::Ciphertext;
+use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 mod cipher_structs;
 mod query;
@@ -82,21 +82,21 @@ fn decode_u32_string(v: Vec<u32>) -> String {
         .into()
 }
 
-fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey) {
+fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey, WopbsParameters) {
     // KeyGen...
     // (insert Waifu here)
-
     use tfhe::shortint::parameters::{
         parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
         PARAM_MESSAGE_2_CARRY_2_KS_PBS,
     };
     let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
-    let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS);
-    (ck, sk, wopbs_key)
+    let wopbs_parameters = WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &wopbs_parameters);
+    (ck, sk, wopbs_key, wopbs_parameters)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (client_key, server_key, wopbs_key) = generate_keys();
+    let (client_key, server_key, wopbs_key, wopbs_params) = generate_keys();
 
     let query_path = PathBuf::from("query.txt");
     let query = build_where_syntax_tree(parse_query(query_path));
@@ -106,20 +106,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("dnf query: \n{}\n", dnf.to_string());
 
     let db_dir_path = "db_dir";
-    let tables = load_tables(
-        db_dir_path.into(),
-        server_key.clone(),
-        wopbs_key.clone().into_raw_parts(),
-    )
-    .expect("Failed to load DB at {db_dir_path}");
+    let tables = load_tables(db_dir_path.into(), server_key.clone(), wopbs_key.clone())
+        .expect("Failed to load DB at {db_dir_path}");
     let (_, table) = tables.tables[0].clone();
     let headers = table.headers.clone();
     println!("headers: {:?}\n", headers);
 
     let encrypted_query = dnf.encrypt(client_key.as_ref(), &headers);
     // let encoded_table = TableQueryRunner::from(table);
-    let wopbs_inner = wopbs_key.clone().into_raw_parts();
-    let query_runner = TableQueryRunner::new(table, &server_key, &wopbs_key, &wopbs_inner);
+    let query_runner = TableQueryRunner::new(table, &server_key, &wopbs_key, wopbs_params);
 
     let ct_result = query_runner.run_fhe_query(&encrypted_query);
     let clear_result = ct_result
@@ -142,10 +137,8 @@ mod tests {
 
     #[test]
     fn encrypt_u8() {
-        println!("generating FHE keys...");
-        let (client_key, _server_key, _) = generate_keys();
+        let (client_key, _server_key, _, _) = generate_keys();
         let client_key = client_key.as_ref();
-        println!("DONE");
         let content: u8 = 5;
         let cell: CellContent = CellContent::U8(content);
         println!("encrypting content: {cell:?}...");
@@ -157,10 +150,8 @@ mod tests {
 
     #[test]
     fn encrypt_short_string() {
-        println!("generating FHE keys...");
-        let (client_key, _server_key, _) = generate_keys();
+        let (client_key, _server_key, _, _) = generate_keys();
         let client_key = client_key.as_ref();
-        println!("DONE");
         let content: String = "test".into();
         let cell: CellContent = CellContent::ShortString(content.clone());
         println!("encrypting content: {cell:?}...");
@@ -176,10 +167,8 @@ mod tests {
 
     #[test]
     fn encrypt_atomic_condition() {
-        println!("generating FHE keys...");
-        let (client_key, _server_key, _) = generate_keys();
+        let (client_key, _server_key, _, _) = generate_keys();
         let client_key = client_key.as_ref();
-        println!("DONE");
         let headers = TableHeaders(vec![(String::from("age"), CellType::U32)]);
         let condition: AtomicCondition = AtomicCondition {
             ident: "age".into(),
