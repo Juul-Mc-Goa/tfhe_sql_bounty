@@ -3,6 +3,7 @@ use tfhe::integer::gen_keys_radix;
 use tfhe::integer::{wopbs::WopbsKey, RadixClientKey, ServerKey};
 use tfhe::shortint::Ciphertext;
 
+mod cipher_structs;
 mod query;
 mod tables;
 
@@ -95,32 +96,38 @@ fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // let (mut client_key, mut server_key, mut wopbs_key) = generate_keys();
+    let (client_key, server_key, wopbs_key) = generate_keys();
 
-    // let query_path = PathBuf::from("query.txt");
-    // let query = build_where_syntax_tree(parse_query(query_path));
-    // let dnf = query.disjunctive_normal_form();
+    let query_path = PathBuf::from("query.txt");
+    let query = build_where_syntax_tree(parse_query(query_path));
+    let dnf = query.disjunctive_normal_form();
 
-    // println!("initial query: \n{}\n", query.to_string());
-    // println!("dnf query: \n{}\n", dnf.to_string());
+    println!("initial query: \n{}\n", query.to_string());
+    println!("dnf query: \n{}\n", dnf.to_string());
 
-    // let db_dir_path = "db_dir";
-    // let tables = load_tables(db_dir_path.into(), &server_key, &wopbs_key)
-    //     .expect("Failed to load DB at {db_dir_path}");
-    // let (_, table) = tables.0[0].clone();
-    // let headers = table.headers.clone();
-    // println!("headers: {:?}\n", headers);
+    let db_dir_path = "db_dir";
+    let tables = load_tables(
+        db_dir_path.into(),
+        server_key.clone(),
+        wopbs_key.clone().into_raw_parts(),
+    )
+    .expect("Failed to load DB at {db_dir_path}");
+    let (_, table) = tables.tables[0].clone();
+    let headers = table.headers.clone();
+    println!("headers: {:?}\n", headers);
 
-    // let encrypted_query = dnf.encrypt(&client_key, &headers);
-    // let encoded_table = EncodedTable::from(table);
+    let encrypted_query = dnf.encrypt(client_key.as_ref(), &headers);
+    // let encoded_table = TableQueryRunner::from(table);
+    let wopbs_inner = wopbs_key.clone().into_raw_parts();
+    let query_runner = TableQueryRunner::new(table, &server_key, &wopbs_key, &wopbs_inner);
 
-    // let ct_result = encoded_table.run_fhe_query(encrypted_query, &server_key, &wopbs_key);
-    // let clear_result = ct_result
-    //     .into_iter()
-    //     .map(|ct_bool: Ciphertext| client_key.decrypt_one_block(&ct_bool))
-    //     .collect::<Vec<bool>>();
+    let ct_result = query_runner.run_fhe_query(&encrypted_query);
+    let clear_result = ct_result
+        .into_iter()
+        .map(|ct_bool: Ciphertext| client_key.decrypt_one_block(&ct_bool))
+        .collect::<Vec<u64>>();
 
-    // println!("result: {clear_result:?}");
+    println!("result: {clear_result:?}");
 
     Ok(())
 }
