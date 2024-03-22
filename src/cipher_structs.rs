@@ -231,6 +231,9 @@ impl<'a> Add<FheBool<'a>> for FheBool<'a> {
     }
 }
 
+/// Multiplies two booleans.
+///
+/// Uses the `integer::ServerKey::boolean_bitand` method.
 impl<'a, 'b, 'c> Mul<&'c FheBool<'a>> for &'b FheBool<'a> {
     type Output = FheBool<'a>;
     fn mul(self, other: &'c FheBool<'a>) -> FheBool<'a> {
@@ -247,6 +250,9 @@ impl<'a, 'b, 'c> Mul<&'c FheBool<'a>> for &'b FheBool<'a> {
     }
 }
 
+/// Multiplies two booleans.
+///
+/// Uses the `integer::ServerKey::boolean_bitand` method.
 impl<'a> Mul<FheBool<'a>> for FheBool<'a> {
     type Output = FheBool<'a>;
     fn mul(self, other: FheBool<'a>) -> FheBool<'a> {
