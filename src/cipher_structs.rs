@@ -153,9 +153,16 @@ impl<'a> UpdatableLUT<'a> {
     }
 }
 
-/// A struct designed to compute the XOR gate without doing a PBS.
+/// A struct designed to compute the XOR and NOT gates without doing a PBS.
 ///
-/// It essentially uses that `a ^ b = (a + b) % 2`.
+/// It essentially uses that `a ^ b = (a + b) % 2`, where booleans are understood
+/// as elements of Z/2Z:
+/// ```rust
+/// match boolean {
+///   true => 1,
+///   false => 0,
+/// }
+/// ```
 #[derive(Clone)]
 pub struct FheBool<'a> {
     pub ct: Ciphertext,
@@ -190,7 +197,19 @@ impl<'a, 'b> Not for &'b FheBool<'a> {
 impl<'a> Not for FheBool<'a> {
     type Output = FheBool<'a>;
     fn not(self) -> Self::Output {
-        !&self
+        let message_modulus = self.server_key.message_modulus().0;
+        let carry_modulus = self.server_key.carry_modulus().0;
+        let shift_plaintext = (1_u64 << 63) / (message_modulus * carry_modulus) as u64;
+        let encoded_scalar = Plaintext(shift_plaintext);
+
+        let mut ct_result = self.ct;
+        lwe_ciphertext_plaintext_add_assign(&mut ct_result.ct, encoded_scalar);
+        ct_result.degree = Degree::new(ct_result.degree.get() + 1 as usize);
+
+        FheBool {
+            ct: ct_result,
+            server_key: &self.server_key,
+        }
     }
 }
 
