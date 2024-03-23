@@ -4,7 +4,7 @@ use tfhe::integer::wopbs::WopbsKey;
 use tfhe::integer::{ClientKey, RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
-use crate::cipher_structs::{FheBool, UpdatableLUT};
+use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
 use crate::EncryptedSyntaxTree;
 
 /// An enum with one variant for each possible type of a cell's content.
@@ -224,7 +224,13 @@ impl<'a> TableQueryRunner<'a> {
     /// multiplications, using the fact that addition is much faster than PBS.
     fn run_query_on_entry(&self, entry: &Vec<u32>, query: &EncryptedSyntaxTree) -> Ciphertext {
         let sk = self.server_key;
-        let lut = UpdatableLUT::new(entry, sk, self.wopbs_key, self.wopbs_parameters.clone());
+        let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key, self.wopbs_parameters.clone());
+        let query_lut = QueryLUT::new(
+            query.len(),
+            sk,
+            self.wopbs_key,
+            self.wopbs_parameters.clone(),
+        );
 
         let new_fhe_bool = |ct: Ciphertext| FheBool { ct, server_key: sk };
         let mut result_bool = new_fhe_bool(sk.create_trivial_boolean_block(true).into_inner());
@@ -240,61 +246,52 @@ impl<'a> TableQueryRunner<'a> {
         if query.is_empty() {
             // if the condition is empty then return true
             return result_bool.ct;
-        } else if query.len() == 1 {
-            // if the condition is just one atom then return the atom boolean
-            let (_, (index, val, is_leq, negate)) = &query[0];
-
-            let op_is_leq: FheBool = new_fhe_bool(is_leq.clone());
-            let current_value = lut.apply(index);
-
-            // atom_bool = is_leq * (current_val < val) + (current_val == val) + negate
-            let result = (op_is_leq * is_lt(&current_value, &val))
-                + is_eq(&current_value, &val)
-                + new_fhe_bool(negate.clone());
-
-            return result.ct;
         }
 
         // else, loop through all atoms
 
-        // initialize current_and_clause to be the first (boolean valued) op
-        let mut current_and_clause = new_fhe_bool(query[0].0.clone());
+        for (is_op, left, which_op, right, negate) in query.iter() {
+            let (is_op, which_op, negate) = (
+                new_fhe_bool(is_op.clone()),
+                new_fhe_bool(which_op.clone()),
+                new_fhe_bool(negate.clone()),
+            );
 
-        for (op, encrypted_atom) in query.iter() {
-            let (index, val, is_leq, negate) = encrypted_atom;
+            let val_left = entry_lut.apply(left);
+            let val_right = right;
+            // (val_left <= val_right) <=> is_lt OR is_eq
+            let is_lt = is_lt(&val_left, val_right);
+            let is_eq = is_eq(&val_left, val_right);
 
-            let current_value = lut.apply(index);
-            let op_is_leq: FheBool = new_fhe_bool(is_leq.clone());
-
-            // atom_bool = is_leq * (current_val < val) + (current_val == val) + negate
-            let atom_bool = op_is_leq * is_lt(&current_value, &val)
-                + is_eq(&current_value, &val)
-                + new_fhe_bool(negate.clone());
-
+            let atom_left = new_fhe_bool(query_lut.apply(left));
+            let atom_right = new_fhe_bool(query_lut.apply(right));
             // result_bool:
-            //   | if !op: result_bool OR current_and_clause
-            //   | else: result_bool
+            //   | if is_op: op_bool XOR negate
+            //   | else: atom_bool XOR negate
+            // op_bool:
+            //   | if which_bool: atom_left AND atom_right
+            //   | else: atom_left OR atom_right
+            // atom_bool:
+            //   | if which_bool: val_left <= val_right
+            //   | else: val_left == val_right
             // so we get:
-            // result_bool = (op AND result_bool) XOR (!op AND (result_bool OR current_and_clause))
+            // result_bool = (is_op AND
+            //                  (which_op AND atom_left AND atom_right) XOR
+            //                  (!which_op AND (atom_left OR atom_right))) XOR
+            //               (!is_op AND (is_eq XOR (which_op AND is_lt))) XOR
+            //               negate
             // and compute modulo 2:
-            // result_bool = op * result_bool + (1 + op) * (result_bool + current_and_clause
-            //                                              + result_bool * current_and_clause)
-            //             = result_bool + (1 + op) * current_and_clause * (1 + result_bool)
-
-            // (create a temporary value so that the borrow checker doesn't throw an error)
-            let op_fhe_bool = new_fhe_bool(op.clone());
-            let temp_bool = &!&op_fhe_bool * &current_and_clause * !&result_bool;
-            result_bool += &temp_bool;
-
-            // current_and_clause:
-            //   | if op: (current_and_clause AND atom_bool)
-            //   | else: atom_bool
-            // so we get:
-            // current_and_clause = (op AND (current_and_clause AND atom_bool)) XOR (!op AND atom_bool)
-            // and compute modulo 2:
-            // current_and_clause = (op * current_and_clause * atom_bool) + (1 + op) * atom_bool
-            //                    = atom_bool * (1 + op * (1 + current_and_clause))
-            current_and_clause = atom_bool * !(op_fhe_bool * !current_and_clause);
+            // result_bool = is_op * (
+            //                 which_op * atom_left * atom_right +
+            //                 (1 + which_op) * (atom_left + atom_right + atom_left * atom_right)) +
+            //               (1 + is_op) * (is_eq + which_op * is_lt)
+            //             = is_op * (atom_left + atom_right + which_op * atom_left * atom_right) +
+            //               (1 + is_op) * (is_eq + which_op * is_lt) +
+            //               negate
+            result_bool = &is_op
+                * &(&atom_left + &atom_right + &which_op * &atom_left * atom_right)
+                + !is_op * (is_eq + which_op * is_lt)
+                + negate;
         }
         result_bool.ct
     }
@@ -381,22 +378,4 @@ pub fn load_tables(
 mod tests {
     use super::*;
     use crate::generate_keys;
-
-    // #[test]
-    // fn update_lookup_table() {
-    //     let (ck, sk, wopbs_key, wopbs_params) = generate_keys();
-    //     let entry: Vec<u32> = vec![2, 3, 4, 5, 6];
-    //     let mut lut = UpdatableLUT::new(&entry, &sk, &wopbs_key, wopbs_params);
-
-    //     lut.update(1, 0);
-
-    //     // let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
-    //     let lut_at_1 = lut.apply(&sk.create_trivial_radix(1u64, 4));
-    //     let lut_at_2 = lut.apply(&sk.create_trivial_radix(2u64, 4));
-    //     let clear1: u32 = ck.decrypt(&lut_at_1);
-    //     let clear2: u32 = ck.decrypt(&lut_at_2);
-
-    //     assert_eq!(clear1, 0);
-    //     assert_eq!(clear2, 4);
-    // }
 }

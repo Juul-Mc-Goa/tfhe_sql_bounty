@@ -1,8 +1,7 @@
 //! Query parsing and manipulation.
 //!
-//! This module contains types for an internal representation of queries, methods for obtaining
-//! a disjunctive normal form of the resulting syntax tree, as well as methods for encoding and
-//! encrypting them.
+//! This module contains types for an internal representation of queries, as
+//! well as methods for encoding and encrypting them.
 
 use crate::{CellContent, CellType, TableHeaders};
 use sqlparser::ast::{BinaryOperator, Expr, Ident, SetExpr, Statement, UnaryOperator, Value};
@@ -327,7 +326,6 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                     index,
                     node: Node::Not(Box::new(child)),
                 }
-                // Self::Not(Box::new(Self::from((parent_id, e.as_ref().to_owned()))))
             }
             Expr::UnaryOp { op, .. } => panic!("unknown unary operator {op:?}"),
             Expr::BinaryOp {
@@ -336,13 +334,10 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                 ref right,
             } => match (left.as_ref().to_owned(), right.as_ref().to_owned()) {
                 // builds an Atom from a SQL expression `column OP value`
-                (Expr::Identifier(i_left), Expr::Value(v_right)) => {
-                    // WhereSyntaxTree::Atom(AtomicCondition::from((i_left, op.to_owned(), v_right)))
-                    Self {
-                        index: parent_id,
-                        node: Node::Atom(AtomicCondition::from((i_left, op.to_owned(), v_right))),
-                    }
-                }
+                (Expr::Identifier(i_left), Expr::Value(v_right)) => Self {
+                    index: parent_id,
+                    node: Node::Atom(AtomicCondition::from((i_left, op.to_owned(), v_right))),
+                },
                 (Expr::Identifier(i_left), Expr::Identifier(i_right))
                     if op == &BinaryOperator::Eq =>
                 {

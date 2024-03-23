@@ -100,10 +100,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let query_path = PathBuf::from("query.txt");
     let query = build_where_syntax_tree(parse_query(query_path));
-    let dnf = query.disjunctive_normal_form();
 
     println!("initial query: \n{}\n", query.to_string());
-    println!("dnf query: \n{}\n", dnf.to_string());
 
     let db_dir_path = "db_dir";
     let tables = load_tables(db_dir_path.into(), server_key.clone(), wopbs_key.clone())
@@ -112,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let headers = table.headers.clone();
     println!("headers: {:?}\n", headers);
 
-    let encrypted_query = dnf.encrypt(client_key.as_ref(), &headers);
+    let encrypted_query = query.encrypt(client_key.as_ref(), &headers, false);
     // let encoded_table = TableQueryRunner::from(table);
     let query_runner = TableQueryRunner::new(table, &server_key, &wopbs_key, wopbs_params);
 
@@ -215,7 +213,7 @@ mod tests {
             value: CellContent::U32(890),
         };
         println!("encrypting condition: {condition:?}...");
-        let _encrypted_cond = condition.encrypt(client_key, &headers);
+        let _encrypted_cond = condition.encrypt(client_key, &headers, false);
         // println!("decrypting...");
         // let decrypted_cond: Vec<u8> = decrypt_vec(encrypted_cond, client_key);
     }
