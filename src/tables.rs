@@ -250,7 +250,7 @@ impl<'a> TableQueryRunner<'a> {
 
         // else, loop through all atoms
 
-        for (is_op, left, which_op, right, negate) in query.iter() {
+        for (index, (is_op, left, which_op, right, negate)) in query.iter().enumerate() {
             let (is_op, which_op, negate) = (
                 new_fhe_bool(is_op.clone()),
                 new_fhe_bool(which_op.clone()),
@@ -259,12 +259,13 @@ impl<'a> TableQueryRunner<'a> {
 
             let val_left = entry_lut.apply(left);
             let val_right = right;
-            // (val_left <= val_right) <=> is_lt OR is_eq
+            // (val_left <= val_right) <=> is_lt XOR is_eq
             let is_lt = is_lt(&val_left, val_right);
             let is_eq = is_eq(&val_left, val_right);
 
             let atom_left = new_fhe_bool(query_lut.apply(left));
             let atom_right = new_fhe_bool(query_lut.apply(right));
+
             // result_bool:
             //   | if is_op: op_bool XOR negate
             //   | else: atom_bool XOR negate
@@ -276,6 +277,12 @@ impl<'a> TableQueryRunner<'a> {
             //   | else: val_left == val_right
             // so we get:
             // result_bool = (is_op AND
+            //                  (which_op AND atom_left AND atom_right) XOR
+            //                  (!which_op AND (atom_left OR atom_right))) XOR
+            //               (!is_op AND
+            //                 ((which_op AND (is_eq XOR is_lt)) XOR (!which_op AND is_eq))) XOR
+            //               negate
+            //             = (is_op AND
             //                  (which_op AND atom_left AND atom_right) XOR
             //                  (!which_op AND (atom_left OR atom_right))) XOR
             //               (!is_op AND (is_eq XOR (which_op AND is_lt))) XOR
@@ -292,6 +299,9 @@ impl<'a> TableQueryRunner<'a> {
                 * &(&atom_left + &atom_right + &which_op * &atom_left * atom_right)
                 + !is_op * (is_eq + which_op * is_lt)
                 + negate;
+
+            // update query lookup table
+            query_lut.update(index as u8, result_bool);
         }
         result_bool.ct
     }

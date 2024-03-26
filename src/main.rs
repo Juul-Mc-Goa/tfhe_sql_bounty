@@ -101,17 +101,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query_path = PathBuf::from("query.txt");
     let query = build_where_syntax_tree(parse_query(query_path));
 
-    println!("initial query: \n{}\n", query.to_string());
+    println!("query: \n{}\n", query.to_string());
 
     let db_dir_path = "db_dir";
     let tables = load_tables(db_dir_path.into(), server_key.clone(), wopbs_key.clone())
         .expect("Failed to load DB at {db_dir_path}");
     let (_, table) = tables.tables[0].clone();
     let headers = table.headers.clone();
-    println!("headers: {:?}\n", headers);
 
     let encrypted_query = query.encrypt(client_key.as_ref(), &headers, false);
-    // let encoded_table = TableQueryRunner::from(table);
     let query_runner = TableQueryRunner::new(table, &server_key, &wopbs_key, wopbs_params);
 
     let ct_result = query_runner.run_fhe_query(&encrypted_query);
@@ -171,7 +169,5 @@ mod tests {
         };
         println!("encrypting condition: {condition:?}...");
         let _encrypted_cond = condition.encrypt(client_key, &headers, false);
-        // println!("decrypting...");
-        // let decrypted_cond: Vec<u8> = decrypt_vec(encrypted_cond, client_key);
     }
 }
