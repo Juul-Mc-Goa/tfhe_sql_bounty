@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tfhe = { version = "*", features = ["boolean", "integer", "shortint", "x86_64-unix"] }
-sqlparser=  { version = "*" }
-serde =  { version = "*" }
 csv =  { version = "*" }
+dyn-stack = { version = "0.9" }
+serde =  { version = "*" }
+sqlparser=  { version = "*" }
+tfhe = { version = "*", features = ["boolean", "integer", "shortint", "x86_64-unix"] }

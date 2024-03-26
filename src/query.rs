@@ -250,7 +250,7 @@ impl WhereSyntaxTree {
             result
         };
         match &self.node {
-            Node::Atom(a) => vec![a.to_string()],
+            Node::Atom(a) => vec![format!("({}) {}", self.index, a.to_string())],
             Node::And(a, b) => binary_op_closure("And", a, b),
             Node::Or(a, b) => binary_op_closure("Or", a, b),
             Node::Not(a) => {
@@ -399,5 +399,16 @@ pub fn build_where_syntax_tree(statement: Statement) -> WhereSyntaxTree {
             _ => panic!("unknown query: {q:?}"),
         },
         _ => panic!("unknown statement: {statement:?}"),
+    }
+}
+
+mod tests {
+    use super::*;
+
+    fn print_query() {
+        let query_path = PathBuf::from("query.txt");
+        let query = build_where_syntax_tree(parse_query(query_path));
+
+        println!("query: \n{}\n", query.to_string());
     }
 }
