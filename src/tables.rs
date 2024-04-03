@@ -222,18 +222,30 @@ impl<'a> TableQueryRunner<'a> {
     /// - `NOT a` becomes `1+a`.
     /// Then the boolean formulas are simplified so as to minimize the number of
     /// multiplications, using the fact that addition is much faster than PBS.
-    fn run_query_on_entry(&self, entry: &Vec<u32>, query: &EncryptedSyntaxTree) -> Ciphertext {
+    fn run_query_on_entry(
+        &self,
+        entry: &Vec<u32>,
+        query: &EncryptedSyntaxTree,
+        query_lut: &mut QueryLUT,
+    ) -> Ciphertext {
+        println!("*** NEW ENTRY ***");
         let sk = self.server_key;
+        // let inner_sk = sk.clone().into_raw_parts();
+
         let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key, self.wopbs_parameters.clone());
-        let query_lut = QueryLUT::new(
-            query.len(),
-            sk,
-            self.wopbs_key,
-            self.wopbs_parameters.clone(),
-        );
+        // let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
+
+        // let mut query_lut: QueryLUT<'_> = QueryLUT::new(
+        //     query.len(),
+        //     &sk,
+        //     &inner_sk,
+        //     &inner_wopbs,
+        //     self.wopbs_parameters.clone(),
+        // );
 
         let new_fhe_bool = |ct: Ciphertext| FheBool { ct, server_key: sk };
-        let mut result_bool = new_fhe_bool(sk.create_trivial_boolean_block(true).into_inner());
+        // let mut result_bool = new_fhe_bool(sk.create_trivial_boolean_block(true).into_inner());
+        let mut result_bool = FheBool::encrypt_trivial(true, sk);
 
         let is_lt = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
             new_fhe_bool(sk.lt_parallelized(a, b).into_inner())
@@ -251,6 +263,7 @@ impl<'a> TableQueryRunner<'a> {
         // else, loop through all atoms
 
         for (index, (is_op, left, which_op, right, negate)) in query.iter().enumerate() {
+            println!("atom n°{index}");
             let (is_op, which_op, negate) = (
                 new_fhe_bool(is_op.clone()),
                 new_fhe_bool(which_op.clone()),
@@ -264,17 +277,17 @@ impl<'a> TableQueryRunner<'a> {
             let is_eq = is_eq(&val_left, val_right);
 
             let atom_left = new_fhe_bool(query_lut.apply(left));
-            let atom_right = new_fhe_bool(query_lut.apply(right));
+            let atom_right = new_fhe_bool(query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4)));
 
             // result_bool:
             //   | if is_op: op_bool XOR negate
-            //   | else: atom_bool XOR negate
+            //   | else:   atom_bool XOR negate
             // op_bool:
-            //   | if which_bool: atom_left AND atom_right
-            //   | else: atom_left OR atom_right
+            //  | if which_bool: atom_left AND atom_right
+            //   | else:          atom_left OR atom_right
             // atom_bool:
             //   | if which_bool: val_left <= val_right
-            //   | else: val_left == val_right
+            //   | else:          val_left == val_right
             // so we get:
             // result_bool = (is_op AND
             //                  (which_op AND atom_left AND atom_right) XOR
@@ -292,26 +305,41 @@ impl<'a> TableQueryRunner<'a> {
             //                 which_op * atom_left * atom_right +
             //                 (1 + which_op) * (atom_left + atom_right + atom_left * atom_right)) +
             //               (1 + is_op) * (is_eq + which_op * is_lt)
-            //             = is_op * (atom_left + atom_right + which_op * atom_left * atom_right) +
+            //             = is_op * (
+            //                 atom_left * atom_right +
+            //                 (1 + which_op) * (atom_left + atom_right)) +
             //               (1 + is_op) * (is_eq + which_op * is_lt) +
             //               negate
             result_bool = &is_op
-                * &(&atom_left + &atom_right + &which_op * &atom_left * atom_right)
+                * &(&atom_left * &atom_right + !&which_op * (&atom_left + &atom_right))
                 + !is_op * (is_eq + which_op * is_lt)
                 + negate;
 
             // update query lookup table
-            query_lut.update(index as u8, result_bool);
+            query_lut.update(index as u8, result_bool.ct.clone());
         }
         result_bool.ct
     }
 
     pub fn run_fhe_query(&self, query: &EncryptedSyntaxTree) -> Vec<Ciphertext> {
+        let inner_sk = self.server_key.clone().into_raw_parts();
+        let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
+
+        let mut query_lut: QueryLUT<'_> = QueryLUT::new(
+            query.len(),
+            &self.server_key,
+            &inner_sk,
+            &inner_wopbs,
+            self.wopbs_parameters.clone(),
+        );
+        let mut result: Vec<Ciphertext> = Vec::with_capacity(self.content.len());
         // iterate through each entry
-        self.content
-            .iter()
-            .map(|entry| self.run_query_on_entry(entry, query))
-            .collect()
+        for entry in self.content.iter() {
+            result.push(self.run_query_on_entry(entry, query, &mut query_lut));
+            query_lut.flush();
+        }
+
+        result
     }
 }
 

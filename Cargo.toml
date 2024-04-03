@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-csv =  { version = "*" }
+# tfhe and some of its dependencies
+aligned-vec = { version = "0.5" }
+concrete-fft = { version = "0.4.0" }
 dyn-stack = { version = "0.9" }
+rayon = { version = "1.5.0" }
+tfhe = { version = "*", features = ["boolean", "integer", "shortint", "x86_64-unix"] }
+# csv reader, sqlparser, etc
+csv =  { version = "*" }
 serde =  { version = "*" }
 sqlparser=  { version = "*" }
-tfhe = { version = "*", features = ["boolean", "integer", "shortint", "x86_64-unix"] }

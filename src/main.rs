@@ -90,8 +90,10 @@ fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey, WopbsParameters) {
         PARAM_MESSAGE_2_CARRY_2_KS_PBS,
     };
     let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
+
     let wopbs_parameters = WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &wopbs_parameters);
+
     (ck, sk, wopbs_key, wopbs_parameters)
 }
 

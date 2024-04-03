@@ -201,7 +201,7 @@ impl AtomicCondition {
                     client_key.encrypt_radix(base_index, 4),     // encrypt the column id
                     client_key.encrypt_one_block(op as u64),
                     client_key.encrypt_radix(val, 16),
-                    client_key.encrypt_one_block(inner_negate as u64),
+                    client_key.encrypt_one_block((negate ^ inner_negate) as u64),
                 ));
             }
         }
