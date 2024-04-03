@@ -1,19 +1,12 @@
-use tfhe::boolean::server_key;
 use tfhe::core_crypto::algorithms::{
     lwe_ciphertext_add_assign, lwe_linear_algebra::lwe_ciphertext_plaintext_add_assign,
-    lwe_wopbs::circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement,
-    lwe_wopbs::extract_bits_from_lwe_ciphertext_mem_optimized,
-    lwe_wopbs::extract_bits_from_lwe_ciphertext_mem_optimized_requirement,
 };
 use tfhe::core_crypto::entities::Plaintext;
-use tfhe::core_crypto::fft_impl::fft64::crypto::{
-    ggsw::add_external_product_assign, wop_pbs::blind_rotate_assign,
-};
 
 use tfhe::shortint::ciphertext::Degree;
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
-use tfhe::integer::wopbs::{encode_radix, IntegerWopbsLUT, WopbsKey, WopbsLUTBase};
+use tfhe::integer::wopbs::{encode_radix, IntegerWopbsLUT, WopbsKey};
 use tfhe::integer::{
     BooleanBlock, IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, RadixClientKey,
     ServerKey,
@@ -22,6 +15,8 @@ use tfhe::integer::{
 use std::ops::{Add, AddAssign, Mul, Not};
 
 pub mod hidden_function_lut;
+
+pub use hidden_function_lut::QueryLUT;
 
 /// A lookup table, taking (encrypted) `u8` as input, returning (encrypted) `u32`s.
 pub struct EntryLUT<'a> {
@@ -190,6 +185,13 @@ impl<'a> FheBool<'a> {
         }
     }
 
+    pub fn encrypt_trivial(val: bool, server_key: &'a ServerKey) -> Self {
+        Self {
+            ct: server_key.create_trivial_boolean_block(val).into_inner(),
+            server_key,
+        }
+    }
+
     pub fn into_boolean_block(self) -> BooleanBlock {
         let radix_ct = RadixCiphertext::from_blocks(vec![self.ct]);
         BooleanBlock::new_unchecked(
@@ -321,7 +323,7 @@ impl<'a> Mul<FheBool<'a>> for FheBool<'a> {
 }
 
 mod tests {
-    use super::*;
+    // use super::*;
     use crate::generate_keys;
 
     #[test]

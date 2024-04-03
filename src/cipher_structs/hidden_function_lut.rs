@@ -1,7 +1,7 @@
 //! Modifies all the necessary `tfhe::integer::wopbs`, `tfhe::shortint::wopbs`,
 //! and `tfhe::core_crypto` functions to allow defining "hidden" lookup tables,
-//! that is, FHE counterparts of functions `u8 -> FheBool` rather than FHE
-//! counterparts of "clear" functions `u8 -> bool`.
+//! that is, homomorphic computation of functions `u8 -> FheBool` rather than
+//! homomorphic computation of "clear" functions `u8 -> bool`.
 //!
 //! Here is the list of the copy-pasted and modified functions:
 //! - `WopbsKey::wopbs()` (`integer` API)
@@ -9,132 +9,120 @@
 //! - `WopbsKey::circuit_bootstrap_with_bits() (`shortint` API)`
 //! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized()`
 //! - `circuit_bootstrap_boolean_vertical_packing()`
-//! - `circuit_bootstrap_boolean()`
 //! - `vertical_packing()`
-//! - `cmux_tree_optimized()`
+//! - `cmux_tree_memomry_optimized()`
 
-use dyn_stack::PodStack;
+use aligned_vec::CACHELINE_ALIGN;
+use dyn_stack::{PodStack, ReborrowMut};
+use rayon::prelude::*;
 
-use tfhe::core_crypto::{
-    algorithms::{
-        lwe_ciphertext_add_assign,
-        lwe_linear_algebra::lwe_ciphertext_plaintext_add_assign,
-        lwe_wopbs::{
-            circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement,
-            extract_bits_from_lwe_ciphertext_mem_optimized,
-            extract_bits_from_lwe_ciphertext_mem_optimized_requirement,
-        },
-    },
-    commons::{
-        parameters::{DeltaLog, LweCiphertextCount},
-        traits::Container,
-    },
-    entities::{
-        GgswCiphertext, GlweCiphertext, GlweCiphertextList, LweCiphertextList,
-        LweCiphertextListOwned, Plaintext, PolynomialList, PolynomialListView,
-    },
-    fft_impl::fft64::{
-        crypto::{
-            ggsw::{add_external_product_assign, FourierGgswCiphertext},
-            wop_pbs::{blind_rotate_assign, circuit_bootstrap_boolean},
-        },
-        math::fft::Fft,
-    },
+use tfhe::core_crypto::algorithms::*;
+use tfhe::core_crypto::commons::parameters::*;
+use tfhe::core_crypto::commons::traits::*;
+use tfhe::core_crypto::entities::*;
+use tfhe::core_crypto::fft_impl::fft64::crypto::bootstrap::FourierLweBootstrapKeyView;
+use tfhe::core_crypto::fft_impl::fft64::crypto::ggsw::{
+    add_external_product_assign as inner_add_external_product_assign,
+    FourierGgswCiphertextListMutView, FourierGgswCiphertextListView,
 };
+use tfhe::core_crypto::fft_impl::fft64::crypto::wop_pbs::{
+    blind_rotate_assign as wop_pbs_blind_rotate_assign, circuit_bootstrap_boolean,
+    circuit_bootstrap_boolean_vertical_packing_scratch, cmux_tree_memory_optimized_scratch,
+};
+use tfhe::core_crypto::fft_impl::fft64::math::fft::{Fft, FftView};
+
+use concrete_fft::c64;
 
 use tfhe::shortint::{
     ciphertext::{Degree, NoiseLevel},
+    engine::ShortintEngine,
     server_key::ShortintBootstrappingKey,
-    wopbs::{WopbsKeyCreationError, WopbsLUTBase},
-    Ciphertext, WopbsParameters,
+    wopbs::{WopbsKey, WopbsKeyCreationError},
+    Ciphertext, ServerKey, WopbsParameters,
 };
 
-use tfhe::integer::{
-    wopbs::{encode_radix, IntegerWopbsLUT, WopbsKey},
-    BooleanBlock, IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, RadixClientKey,
-    ServerKey,
-};
+use tfhe::integer::{IntegerCiphertext, RadixCiphertext};
 
 /// An updatable lookup table, that holds the intermediary `FheBool`s used when
 /// running an encrypted SQL query.
 pub struct QueryLUT<'a> {
-    max_argument: RadixCiphertext,
-    lut: IntegerWopbsLUT,
+    lut: GlweCiphertextList<Vec<u64>>,
     server_key: &'a ServerKey,
-    wopbs_key: &'a WopbsKey, // TODO: use shortint API
-    wopbs_parameters: WopbsParameters,
+    wopbs_key: &'a WopbsKey, // use shortint API
 }
 
 impl<'a> QueryLUT<'a> {
     pub fn new(
         size: usize,
-        server_key: &'a ServerKey,
+        integer_server_key: &'a tfhe::integer::ServerKey,
+        inner_server_key: &'a ServerKey,
         wopbs_key: &'a WopbsKey,
         wopbs_parameters: WopbsParameters,
     ) -> Self {
         // the server_key.generate_lut_radix() method needs a ciphertext for
         // computing the lut size. We use num_blocks = 4, i.e. we assume the
         // total kength of a queryis lower than 4^4 = 256.
-        let max_argument: RadixCiphertext = server_key.create_trivial_radix(size as u64, 4);
-        // convenience closure for looking up an entry's cell content from an encrypted index
-        let f = |_: u64| -> u64 { 0 };
-        let lut = wopbs_key.generate_lut_radix(&max_argument, f);
+        // let max_argument: RadixCiphertext = integer_server_key.create_trivial_radix(size as u64, 4);
+
+        let lut = GlweCiphertextList::new(
+            u64::ZERO,
+            wopbs_parameters.glwe_dimension.to_glwe_size(),
+            wopbs_key.param.polynomial_size,
+            GlweCiphertextCount(size),
+            wopbs_parameters.ciphertext_modulus,
+        );
 
         Self {
-            max_argument,
             lut,
-            server_key,
+            server_key: inner_server_key,
             wopbs_key,
-            wopbs_parameters,
         }
     }
 
-    pub fn apply(&self, index: &RadixCiphertext) -> Ciphertext {
-        let ct = self
-            .wopbs_key
-            .keyswitch_to_wopbs_params(self.server_key, index);
-        let ct_res = self.wopbs_key.wopbs(&ct, &self.lut);
-        self.wopbs_key
-            .keyswitch_to_pbs_params(&ct_res)
-            .into_blocks()[0]
-            .clone()
+    pub fn flush(&mut self) {
+        self.lut.as_mut().fill(u64::ZERO);
+    }
+
+    /// Perform table lookup with argument `index` an encrypted `u8`.
+    ///
+    /// Returns an encryption of a boolean, of type `Ciphertext`.
+    pub fn apply<'b, T>(&self, index: &'b T) -> Ciphertext
+    where
+        T: IntegerCiphertext,
+        &'b [Ciphertext]: IntoParallelIterator<Item = &'b Ciphertext>,
+    {
+        // copy-paste integer::WopbsKey::keyswitch_to_wopbs_params
+        let blocks: Vec<_> = index
+            .blocks()
+            .par_iter()
+            .map(|block| {
+                self.wopbs_key
+                    .keyswitch_to_wopbs_params(self.server_key, block)
+            })
+            .collect();
+        let ct = T::from_blocks(blocks);
+        let ct_res = self.wopbs(&ct);
+
+        self.wopbs_key.keyswitch_to_pbs_params(&ct_res)
     }
 
     /// Updates a lookup table at the given index.
-    ///
-    /// This method is mostly a copy-paste of `WopbsKey::generate_lut_radix()`.
-    pub fn update(&mut self, index: u8, value: bool) {
+    pub fn update(&mut self, index: u8, value: Ciphertext) {
         let index = index as usize;
 
-        let basis = self.max_argument.moduli()[0];
-        let block_nb = self.max_argument.blocks().len();
-        let (wopbs_message_modulus, wopbs_carry_modulus) = (
-            self.wopbs_parameters.message_modulus.0,
-            self.wopbs_parameters.carry_modulus.0,
+        // TODO: apply private functional keyswitch
+        par_private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext(
+            &self.wopbs_key.cbs_pfpksk.get(0),
+            &mut self.lut.get_mut(index),
+            &value.ct,
         );
-        let delta: u64 = (1 << 63) / (wopbs_message_modulus * wopbs_carry_modulus) as u64;
-        let mut vec_deg_basis = vec![];
-
-        let mut modulus = 1;
-        for (i, deg) in self
-            .max_argument
-            .moduli()
-            .iter()
-            .zip(self.max_argument.blocks().iter())
-        {
-            modulus *= i;
-            let b = f64::log2((deg.degree.get() + 1) as f64).ceil() as u64;
-            vec_deg_basis.push(b);
-        }
-
-        let f_val = value as u64;
-        let encoded_f_val = encode_radix(f_val, basis, block_nb as u64);
-        for (lut_number, radix_encoded_val) in encoded_f_val.iter().enumerate().take(block_nb) {
-            self.lut[lut_number][index] = radix_encoded_val * delta;
-        }
+        // self.lut.get_mut(index).as_mut_view().as_mut()[0..ct_size]
+        //     .copy_from_slice(value.ct.as_ref());
     }
 
-    fn wopbs<T>(&self, ct_in: &T, lut: &IntegerWopbsLUT) -> T
+    /// Inner function called when performing table lookup. Copy-pasted from
+    /// `integer::WopbsKey::wopbs`.
+    fn wopbs<T>(&self, ct_in: &T) -> Ciphertext
     where
         T: IntegerCiphertext,
     {
@@ -142,18 +130,8 @@ impl<'a> QueryLUT<'a> {
             acc + f64::log2((block.degree.get() + 1) as f64).ceil() as usize
         });
 
-        // let extract_bits_output_lwe_size = self
-        //     .wopbs_key
-        //     .wopbs_server_key
-        //     .key_switching_key
-        //     .output_key_lwe_dimension()
-        //     .to_lwe_size();
-
-        // TODO: do not clone wopbs_key
         let extract_bits_output_lwe_size = self
             .wopbs_key
-            .clone()
-            .into_raw_parts()
             .wopbs_server_key
             .key_switching_key
             .output_key_lwe_dimension()
@@ -192,16 +170,11 @@ impl<'a> QueryLUT<'a> {
             );
         }
 
-        // let vec_ct_out = self
-        //     .wopbs_key
-        //     .circuit_bootstrapping_vertical_packing(lut.as_ref(), &extracted_bits_blocks);
-
-        let vec_ct_out =
-            self.circuit_bootstrapping_vertical_packing(lut.as_ref(), &extracted_bits_blocks);
+        let vec_ct_out = self.circuit_bootstrapping_vertical_packing(&extracted_bits_blocks);
 
         let mut ct_vec_out = vec![];
         for (block, block_out) in ct_in.blocks().iter().zip(vec_ct_out) {
-            ct_vec_out.push(crate::shortint::Ciphertext::new(
+            ct_vec_out.push(Ciphertext::new(
                 block_out,
                 Degree::new(block.message_modulus.0 - 1),
                 NoiseLevel::NOMINAL,
@@ -210,100 +183,44 @@ impl<'a> QueryLUT<'a> {
                 block.pbs_order,
             ));
         }
-        T::from_blocks(ct_vec_out)
-    }
-
-    pub fn extract_bits_assign<OutputCont>(
-        &self,
-        delta_log: DeltaLog,
-        ciphertext: &Ciphertext,
-        num_bits_to_extract: ExtractedBitsCount,
-        output: &mut LweCiphertextList<OutputCont>,
-    ) where
-        OutputCont: ContainerMut<Element = u64>,
-    {
-        // TODO: remove the .clone()
-        let server_key = &self.wopbs_key.clone().into_raw_parts().wopbs_server_key;
-
-        let bsk = &server_key.bootstrapping_key;
-        let ksk = &server_key.key_switching_key;
-
-        let fft = Fft::new(bsk.polynomial_size());
-        let fft = fft.as_view();
-
-        ShortintEngine::with_thread_local_mut(|engine| {
-            engine.computation_buffers.resize(
-                extract_bits_from_lwe_ciphertext_mem_optimized_requirement::<u64>(
-                    ciphertext.ct.lwe_size().to_lwe_dimension(),
-                    ksk.output_key_lwe_dimension(),
-                    bsk.glwe_size(),
-                    bsk.polynomial_size(),
-                    fft,
-                )
-                .unwrap()
-                .unaligned_bytes_required(),
-            );
-
-            let stack = engine.computation_buffers.stack();
-
-            match bsk {
-                ShortintBootstrappingKey::Classic(bsk) => {
-                    extract_bits_from_lwe_ciphertext_mem_optimized(
-                        &ciphertext.ct,
-                        output,
-                        bsk,
-                        ksk,
-                        delta_log,
-                        num_bits_to_extract,
-                        fft,
-                        stack,
-                    );
-                }
-                ShortintBootstrappingKey::MultiBit { .. } => {
-                    todo!("extract_bits_assign currently does not support multi-bit PBS")
-                }
-            }
-        });
+        ct_vec_out[0].clone()
     }
 
     fn circuit_bootstrapping_vertical_packing<InputCont>(
         &self,
-        vec_lut: &WopbsLUTBase,
         extracted_bits_blocks: &LweCiphertextList<InputCont>,
     ) -> Vec<LweCiphertextOwned<u64>>
     where
         InputCont: Container<Element = u64>,
     {
+        let output_ciphertext_count = LweCiphertextCount(1);
+
         let output_list = self.circuit_bootstrap_with_bits(
             extracted_bits_blocks,
-            &vec_lut.lut(),
-            LweCiphertextCount(vec_lut.output_ciphertext_count().0),
+            LweCiphertextCount(1),
+            // LweCiphertextCount(vec_lut.output_ciphertext_count().0),
         );
 
         let output_container = output_list.into_container();
-        // TODO: use self.wopbs_key
-        let ciphertext_modulus = self.wopbs_parameters.ciphertext_modulus;
+        let ciphertext_modulus = self.wopbs_key.param.ciphertext_modulus;
         let lwes: Vec<_> = output_container
-            .chunks_exact(output_container.len() / vec_lut.output_ciphertext_count().0)
+            .chunks_exact(output_container.len() / output_ciphertext_count.0)
             .map(|s| LweCiphertextOwned::from_container(s.to_vec(), ciphertext_modulus))
             .collect();
 
         lwes
     }
 
-    fn circuit_bootstrap_with_bits<InputCont, LutCont>(
+    fn circuit_bootstrap_with_bits<InputCont>(
         &self,
         extracted_bits: &LweCiphertextList<InputCont>,
-        lut: &PlaintextList<LutCont>,
         count: LweCiphertextCount,
     ) -> LweCiphertextListOwned<u64>
     where
         InputCont: Container<Element = u64>,
-        LutCont: Container<Element = u64>,
     {
-        // TODO: remove the .clone()
-        let server_key = &self.wopbs_key.clone().into_raw_parts().wopbs_server_key;
-        let fourier_bsk = &sks.bootstrapping_key;
+        let server_key = &self.wopbs_key.wopbs_server_key;
+        let fourier_bsk = &server_key.bootstrapping_key;
 
         let output_lwe_size = fourier_bsk.output_lwe_dimension().to_lwe_size();
 
@@ -311,43 +228,51 @@ impl<'a> QueryLUT<'a> {
             0u64,
             output_lwe_size,
             count,
-            self.param.ciphertext_modulus,
+            self.wopbs_key.param.ciphertext_modulus,
         );
-        // TODO: do not use PolynomialListView
-        let lut = PolynomialListView::from_container(lut.as_ref(), fourier_bsk.polynomial_size());
+        // NOTE: copied from PolynomialList
+        let poly_count =
+            PolynomialCount(self.lut.as_ref().container_len() / fourier_bsk.polynomial_size().0);
 
         let fft = Fft::new(fourier_bsk.polynomial_size());
         let fft = fft.as_view();
 
         ShortintEngine::with_thread_local_mut(|engine| {
-            engine.computation_buffers.resize(
+            let (_, computation_buffers) = engine.get_buffers(server_key);
+            computation_buffers.resize(
                 circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement::<u64>(
                     extracted_bits.lwe_ciphertext_count(),
                     output_cbs_vp_ct.lwe_ciphertext_count(),
                     extracted_bits.lwe_size(),
-                    lut.polynomial_count(),
+                    poly_count.clone(),
                     fourier_bsk.output_lwe_dimension().to_lwe_size(),
                     fourier_bsk.glwe_size(),
-                    self.cbs_pfpksk.output_polynomial_size(),
-                    self.param.cbs_level,
+                    self.wopbs_key.cbs_pfpksk.output_polynomial_size(),
+                    self.wopbs_key.param.cbs_level,
                     fft,
                 )
                 .unwrap()
                 .unaligned_bytes_required(),
             );
 
-            let stack = engine.computation_buffers.stack();
+            let stack = computation_buffers.stack();
 
-            match &sks.bootstrapping_key {
+            match &server_key.bootstrapping_key {
                 ShortintBootstrappingKey::Classic(bsk) => {
                     circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized(
                         extracted_bits,
-                        &mut output_cbs_vp_ct,
-                        &lut,
+                        &mut output_cbs_vp_ct.as_mut_view(),
+                        GlweCiphertextList::from_container(
+                            self.lut.as_ref(),
+                            self.lut.glwe_size(),
+                            self.lut.polynomial_size(),
+                            self.lut.ciphertext_modulus()
+                        ),
                         bsk,
-                        &self.cbs_pfpksk,
-                        self.param.cbs_base_log,
-                        self.param.cbs_level,
+                        poly_count,
+                        &self.wopbs_key.cbs_pfpksk,
+                        self.wopbs_key.param.cbs_base_log,
+                        self.wopbs_key.param.cbs_level,
                         fft,
                         stack,
                     );
@@ -363,19 +288,17 @@ impl<'a> QueryLUT<'a> {
     }
 }
 
-// TODO: change big_lut_as_polynomial_list
 fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized<
-    Scalar,
     InputCont,
-    OutputCont,
-    LutCont,
     BskCont,
     PFPKSKCont,
 >(
     lwe_list_in: &LweCiphertextList<InputCont>,
-    lwe_list_out: &mut LweCiphertext,
-    big_lut_as_polynomial_list: &PolynomialList<LutCont>,
+    lwe_list_out: &mut LweCiphertextList<&mut [u64]>,
+    // big_lut_as_polynomial_list: &PolynomialList<LutCont>,
+    hidden_function_lut: GlweCiphertextList<&[u64]>,
     fourier_bsk: &FourierLweBootstrapKey<BskCont>,
+    poly_count: PolynomialCount,
     pfpksk_list: &LwePrivateFunctionalPackingKeyswitchKeyList<PFPKSKCont>,
     base_log_cbs: DecompositionBaseLog,
     level_cbs: DecompositionLevelCount,
@@ -383,17 +306,15 @@ fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized<
     stack: PodStack<'_>,
 ) where
     // CastInto required for PBS modulus switch which returns a usize
-    Scalar: UnsignedTorus + CastInto<usize>,
-    InputCont: Container<Element = Scalar>,
-    OutputCont: ContainerMut<Element = Scalar>,
-    LutCont: Container<Element = Scalar>,
+    InputCont: Container<Element = u64>,
     BskCont: Container<Element = c64>,
-    PFPKSKCont: Container<Element = Scalar>,
+    PFPKSKCont: Container<Element = u64>,
 {
     circuit_bootstrap_boolean_vertical_packing(
-        big_lut_as_polynomial_list.as_view(),
+        hidden_function_lut,
         fourier_bsk.as_view(),
-        lwe_list_out,
+        poly_count,
+        lwe_list_out.as_mut_view(),
         lwe_list_in.as_view(),
         pfpksk_list.as_view(),
         level_cbs,
@@ -403,18 +324,52 @@ fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized<
     );
 }
 
-// TODO: change big_lut_as_polynomial_list
-fn circuit_bootstrap_boolean_vertical_packing<Scalar: UnsignedTorus + CastInto<usize>>(
-    big_lut_as_polynomial_list: PolynomialList<&[Scalar]>,
+fn circuit_bootstrap_boolean_vertical_packing(
+    // NOTE: the LUT should fit in one polynomial, as its input is an encrypted u8,
+    // and its output is a single ciphertext.
+    // big_lut_as_polynomial_list: PolynomialList<&[Scalar]>,
+    hidden_function_lut: GlweCiphertextList<&[u64]>,
     fourier_bsk: FourierLweBootstrapKeyView<'_>,
-    mut lwe_out: LweCiphertext,
-    lwe_list_in: LweCiphertextList<&[Scalar]>,
-    pfpksk_list: LwePrivateFunctionalPackingKeyswitchKeyList<&[Scalar]>,
+    poly_count: PolynomialCount,
+    mut lwe_out: LweCiphertextList<&mut [u64]>,
+    lwe_list_in: LweCiphertextList<&[u64]>,
+    pfpksk_list: LwePrivateFunctionalPackingKeyswitchKeyList<&[u64]>,
     level_cbs: DecompositionLevelCount,
     base_log_cbs: DecompositionBaseLog,
     fft: FftView<'_>,
     stack: PodStack<'_>,
 ) {
+    debug_assert!(stack.can_hold(
+        circuit_bootstrap_boolean_vertical_packing_scratch::<u64>(
+            lwe_list_in.lwe_ciphertext_count(),
+            lwe_out.lwe_ciphertext_count(),
+            lwe_list_in.lwe_size(),
+            PolynomialCount(hidden_function_lut.entity_count()),
+            fourier_bsk.output_lwe_dimension().to_lwe_size(),
+            fourier_bsk.glwe_size(),
+            pfpksk_list.output_polynomial_size(),
+            level_cbs,
+            fft
+        )
+        .unwrap()
+    ));
+    debug_assert!(
+        lwe_list_in.lwe_ciphertext_count().0 != 0,
+        "Got empty `lwe_list_in`"
+    );
+    debug_assert!(
+        lwe_out.lwe_size().to_lwe_dimension() == fourier_bsk.output_lwe_dimension(),
+        "Output LWE ciphertext needs to have an LweDimension of {}, got {}",
+        lwe_out.lwe_size().to_lwe_dimension().0,
+        fourier_bsk.output_lwe_dimension().0
+    );
+    debug_assert!(lwe_out.ciphertext_modulus() == lwe_list_in.ciphertext_modulus());
+    debug_assert!(lwe_list_in.ciphertext_modulus() == pfpksk_list.ciphertext_modulus());
+    debug_assert!(
+        pfpksk_list.ciphertext_modulus().is_native_modulus(),
+        "This operation currently only supports native moduli"
+    );
+
     let glwe_size = pfpksk_list.output_key_glwe_dimension().to_glwe_size();
     let (mut ggsw_list_data, stack) = stack.make_aligned_with(
         lwe_list_in.lwe_ciphertext_count().0 * pfpksk_list.output_polynomial_size().0 / 2
@@ -427,7 +382,7 @@ fn circuit_bootstrap_boolean_vertical_packing<Scalar: UnsignedTorus + CastInto<u
     let (mut ggsw_res_data, mut stack) = stack.make_aligned_with(
         pfpksk_list.output_polynomial_size().0 * glwe_size.0 * glwe_size.0 * level_cbs.0,
         CACHELINE_ALIGN,
-        |_| Scalar::ZERO,
+        |_| u64::ZERO,
     );
 
     let mut ggsw_list = FourierGgswCiphertextListMutView::new(
@@ -447,12 +402,15 @@ fn circuit_bootstrap_boolean_vertical_packing<Scalar: UnsignedTorus + CastInto<u
         pfpksk_list.ciphertext_modulus(),
     );
 
-    for (lwe_in, ggsw) in izip!(lwe_list_in.iter(), ggsw_list.as_mut_view().into_ggsw_iter(),) {
+    for (lwe_in, ggsw) in lwe_list_in
+        .iter()
+        .zip(ggsw_list.as_mut_view().into_ggsw_iter())
+    {
         circuit_bootstrap_boolean(
             fourier_bsk,
             lwe_in,
             ggsw_res.as_mut_view(),
-            DeltaLog(Scalar::BITS - 1),
+            DeltaLog((u64::BITS - 1) as usize),
             pfpksk_list.as_view(),
             fft,
             stack.rb_mut(),
@@ -461,24 +419,23 @@ fn circuit_bootstrap_boolean_vertical_packing<Scalar: UnsignedTorus + CastInto<u
         ggsw.fill_with_forward_fourier(ggsw_res.as_view(), fft, stack.rb_mut());
     }
 
-    // We deduce the number of luts in the vec_lut from the number of cipherxtexts in lwe_list_out
-    let number_of_luts = 1;
-
-    let small_lut_size = big_lut_as_polynomial_list.polynomial_count().0;
-
-    vertical_packing(lut, lwe_out, ggsw_list.as_view(), fft, stack.rb_mut());
-    // for (lut, lwe_out) in izip!(
-    //     big_lut_as_polynomial_list.chunks_exact(small_lut_size),
-    //     lwe_list_out.iter_mut(),
-    // ) {
-    //     vertical_packing(lut, lwe_out, ggsw_list.as_view(), fft, stack.rb_mut());
-    // }
+    // removed the loop as this function is meant to compute a single ciphertext
+    vertical_packing(
+        hidden_function_lut,
+        poly_count,
+        lwe_out.get_mut(0),
+        ggsw_list.as_view(),
+        fft,
+        stack.rb_mut(),
+    );
 }
 
-// TODO: do not use PolynomialList
-fn vertical_packing<Scalar: UnsignedTorus + CastInto<usize>>(
-    lut: PolynomialList<&[Scalar]>,
-    mut lwe_out: LweCiphertext<&mut [Scalar]>,
+// NOTE: this is called for every output ciphertext computation: thus the lut
+// list handles computation of one output ct.
+fn vertical_packing(
+    lut: GlweCiphertextList<&[u64]>,
+    poly_count: PolynomialCount,
+    mut lwe_out: LweCiphertext<&mut [u64]>,
     ggsw_list: FourierGgswCiphertextListView<'_>,
     fft: FftView<'_>,
     stack: PodStack<'_>,
@@ -488,10 +445,18 @@ fn vertical_packing<Scalar: UnsignedTorus + CastInto<usize>>(
     let glwe_dimension = glwe_size.to_glwe_dimension();
     let ciphertext_modulus = lwe_out.ciphertext_modulus();
 
+    debug_assert!(
+        lwe_out.lwe_size().to_lwe_dimension()
+            == glwe_dimension.to_equivalent_lwe_dimension(polynomial_size),
+        "Output LWE ciphertext needs to have an LweDimension of {:?}, got {:?}",
+        glwe_dimension.to_equivalent_lwe_dimension(polynomial_size),
+        lwe_out.lwe_size().to_lwe_dimension(),
+    );
+
     // Get the base 2 logarithm (rounded down) of the number of polynomials in the list i.e. if
     // there is one polynomial, the number will be 0
     let log_lut_number: usize =
-        Scalar::BITS - 1 - lut.polynomial_count().0.leading_zeros() as usize;
+        (u64::BITS - 1 - lut.glwe_ciphertext_count().0.leading_zeros()) as usize;
 
     let log_number_of_luts_for_cmux_tree = if log_lut_number > ggsw_list.count() {
         // this means that we dont have enough GGSW to perform the CMux tree, we can only do the
@@ -507,8 +472,9 @@ fn vertical_packing<Scalar: UnsignedTorus + CastInto<usize>>(
 
     let (mut cmux_tree_lut_res_data, mut stack) =
         stack.make_aligned_with(polynomial_size.0 * glwe_size.0, CACHELINE_ALIGN, |_| {
-            Scalar::ZERO
+            u64::ZERO
         });
+
     let mut cmux_tree_lut_res = GlweCiphertext::from_container(
         &mut *cmux_tree_lut_res_data,
         polynomial_size,
@@ -518,11 +484,13 @@ fn vertical_packing<Scalar: UnsignedTorus + CastInto<usize>>(
     cmux_tree_memory_optimized(
         cmux_tree_lut_res.as_mut_view(),
         lut,
+        poly_count,
         cmux_ggsw,
         fft,
         stack.rb_mut(),
     );
-    blind_rotate_assign(
+
+    wop_pbs_blind_rotate_assign(
         cmux_tree_lut_res.as_mut_view(),
         br_ggsw,
         fft,
@@ -533,21 +501,28 @@ fn vertical_packing<Scalar: UnsignedTorus + CastInto<usize>>(
     extract_lwe_sample_from_glwe_ciphertext(&cmux_tree_lut_res, &mut lwe_out, MonomialDegree(0));
 }
 
-// TODO: do not use PolynomialList
-fn cmux_tree_memory_optimized<Scalar: UnsignedTorus + CastInto<usize>>(
-    mut output_glwe: GlweCiphertext<&mut [Scalar]>,
-    lut_per_layer: PolynomialList<&[Scalar]>,
+fn cmux_tree_memory_optimized(
+    mut output_glwe: GlweCiphertext<&mut [u64]>,
+    // lut_per_layer: PolynomialList<&[u64]>,
+    lut_per_layer: GlweCiphertextList<&[u64]>,
+    poly_count: PolynomialCount,
     ggsw_list: FourierGgswCiphertextListView<'_>,
     fft: FftView<'_>,
     stack: PodStack<'_>,
 ) {
-    debug_assert!(lut_per_layer.polynomial_count().0 == 1 << ggsw_list.count());
+    // debug_assert!(poly_count.0 == 1 << ggsw_list.count());
+    debug_assert!(lut_per_layer.entity_count() == 1 << ggsw_list.count());
 
     if ggsw_list.count() > 0 {
         let glwe_size = output_glwe.glwe_size();
         let ciphertext_modulus = output_glwe.ciphertext_modulus();
         let polynomial_size = ggsw_list.polynomial_size();
         let nb_layer = ggsw_list.count();
+
+        debug_assert!(stack.can_hold(
+            cmux_tree_memory_optimized_scratch::<u64>(glwe_size, polynomial_size, nb_layer, fft)
+                .unwrap()
+        ));
 
         // These are accumulator that will be used to propagate the result from layer to layer
         // At index 0 you have the lut that will be loaded, and then the result for each layer gets
@@ -556,12 +531,12 @@ fn cmux_tree_memory_optimized<Scalar: UnsignedTorus + CastInto<usize>>(
         let (mut t_0_data, stack) = stack.make_aligned_with(
             polynomial_size.0 * glwe_size.0 * nb_layer,
             CACHELINE_ALIGN,
-            |_| Scalar::ZERO,
+            |_| u64::ZERO,
         );
         let (mut t_1_data, stack) = stack.make_aligned_with(
             polynomial_size.0 * glwe_size.0 * nb_layer,
             CACHELINE_ALIGN,
-            |_| Scalar::ZERO,
+            |_| u64::ZERO,
         );
 
         let mut t_0 = GlweCiphertextList::from_container(
@@ -580,6 +555,7 @@ fn cmux_tree_memory_optimized<Scalar: UnsignedTorus + CastInto<usize>>(
         let (mut t_fill, mut stack) = stack.make_with(nb_layer, |_| 0_usize);
 
         let mut lut_polynomial_iter = lut_per_layer.iter();
+
         loop {
             let even = lut_polynomial_iter.next();
             let odd = lut_polynomial_iter.next();
@@ -588,25 +564,30 @@ fn cmux_tree_memory_optimized<Scalar: UnsignedTorus + CastInto<usize>>(
                 break;
             };
 
-            let mut t_iter = izip!(t_0.iter_mut(), t_1.iter_mut(),).enumerate();
-
+            let mut t_iter = t_0.iter_mut().zip(t_1.iter_mut()).enumerate();
             let (mut j_counter, (mut t0_j, mut t1_j)) = t_iter.next().unwrap();
 
-            t0_j.get_mut_body()
-                .as_mut()
-                .copy_from_slice(lut_2i.as_ref());
+            t0_j.as_mut().copy_from_slice(lut_2i.as_ref());
+            // t0_j.get_mut_body()
+            //     .as_mut()
+            //     .copy_from_slice(lut_2i.as_ref());
 
-            t1_j.get_mut_body()
-                .as_mut()
-                .copy_from_slice(lut_2i_plus_1.as_ref());
+            t1_j.as_mut().copy_from_slice(lut_2i_plus_1.as_ref());
+            // t1_j.get_mut_body()
+            //     .as_mut()
+            //     .copy_from_slice(lut_2i_plus_1.as_ref());
 
             t_fill[0] = 2;
 
+            // iterate from lsb to msb (hence the call to rev())
             for (j, ggsw) in ggsw_list.into_ggsw_iter().rev().enumerate() {
                 if t_fill[j] == 2 {
                     let (diff_data, stack) = stack.rb_mut().collect_aligned(
                         CACHELINE_ALIGN,
-                        izip!(t1_j.as_ref(), t0_j.as_ref()).map(|(&a, &b)| a.wrapping_sub(b)),
+                        t1_j.as_ref()
+                            .iter()
+                            .zip(t0_j.as_ref().iter())
+                            .map(|(&a, &b)| a.wrapping_sub(b)),
                     );
                     let diff = GlweCiphertext::from_container(
                         &*diff_data,
@@ -628,7 +609,7 @@ fn cmux_tree_memory_optimized<Scalar: UnsignedTorus + CastInto<usize>>(
                         };
 
                         output.as_mut().copy_from_slice(t0_j.as_ref());
-                        add_external_product_assign(output, ggsw, diff, fft, stack);
+                        inner_add_external_product_assign(output, ggsw, diff, fft, stack);
                         t_fill[j + 1] += 1;
                         t_fill[j] = 0;
 
@@ -639,7 +620,7 @@ fn cmux_tree_memory_optimized<Scalar: UnsignedTorus + CastInto<usize>>(
                         assert_eq!(j, nb_layer - 1);
                         let mut output = output_glwe.as_mut_view();
                         output.as_mut().copy_from_slice(t0_j.as_ref());
-                        add_external_product_assign(output, ggsw, diff, fft, stack);
+                        inner_add_external_product_assign(output, ggsw, diff, fft, stack);
                     }
                 } else {
                     break;
@@ -647,10 +628,7 @@ fn cmux_tree_memory_optimized<Scalar: UnsignedTorus + CastInto<usize>>(
             }
         }
     } else {
-        output_glwe.get_mut_mask().as_mut().fill(Scalar::ZERO);
-        output_glwe
-            .get_mut_body()
-            .as_mut()
-            .copy_from_slice(lut_per_layer.as_ref());
+        output_glwe.get_mut_mask().as_mut().fill(u64::ZERO);
+        output_glwe.as_mut().copy_from_slice(lut_per_layer.as_ref());
     }
 }
