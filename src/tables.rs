@@ -1,7 +1,10 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
+use tfhe::core_crypto::algorithms::glwe_sample_extraction;
+use tfhe::core_crypto::commons::traits::ContiguousEntityContainer;
+use tfhe::core_crypto::entities::LweCiphertext;
 use tfhe::integer::wopbs::WopbsKey;
-use tfhe::integer::{ClientKey, RadixCiphertext, ServerKey};
+use tfhe::integer::{ClientKey, IntegerRadixCiphertext, RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
@@ -185,6 +188,7 @@ pub struct Table {
 pub struct TableQueryRunner<'a> {
     pub headers: TableHeaders,
     pub content: Vec<Vec<u32>>,
+    pub client_key: &'a ClientKey,
     pub server_key: &'a ServerKey,
     pub wopbs_key: &'a WopbsKey,
     pub wopbs_parameters: WopbsParameters,
@@ -193,6 +197,7 @@ pub struct TableQueryRunner<'a> {
 impl<'a> TableQueryRunner<'a> {
     pub fn new(
         table: Table,
+        client_key: &'a ClientKey,
         server_key: &'a ServerKey,
         wopbs_key: &'a WopbsKey,
         wopbs_parameters: WopbsParameters,
@@ -204,6 +209,7 @@ impl<'a> TableQueryRunner<'a> {
                 .iter()
                 .map(|entry| entry.iter().map(|cell| cell.encode()).flatten().collect())
                 .collect::<Vec<Vec<u32>>>(),
+            client_key,
             server_key,
             wopbs_key,
             wopbs_parameters,
@@ -230,21 +236,10 @@ impl<'a> TableQueryRunner<'a> {
     ) -> Ciphertext {
         println!("*** NEW ENTRY ***");
         let sk = self.server_key;
-        // let inner_sk = sk.clone().into_raw_parts();
 
-        let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key, self.wopbs_parameters.clone());
-        // let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
-
-        // let mut query_lut: QueryLUT<'_> = QueryLUT::new(
-        //     query.len(),
-        //     &sk,
-        //     &inner_sk,
-        //     &inner_wopbs,
-        //     self.wopbs_parameters.clone(),
-        // );
+        let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key);
 
         let new_fhe_bool = |ct: Ciphertext| FheBool { ct, server_key: sk };
-        // let mut result_bool = new_fhe_bool(sk.create_trivial_boolean_block(true).into_inner());
         let mut result_bool = FheBool::encrypt_trivial(true, sk);
 
         let is_lt = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
@@ -256,7 +251,7 @@ impl<'a> TableQueryRunner<'a> {
         };
 
         if query.is_empty() {
-            // if the condition is empty then return true
+            // if the query is empty then return true
             return result_bool.ct;
         }
 
@@ -275,9 +270,31 @@ impl<'a> TableQueryRunner<'a> {
             // (val_left <= val_right) <=> is_lt XOR is_eq
             let is_lt = is_lt(&val_left, val_right);
             let is_eq = is_eq(&val_left, val_right);
+            println!(
+                "  left < right: {}",
+                self.client_key
+                    .decrypt_bool(&is_lt.clone().into_boolean_block())
+            );
+            println!(
+                "  left = right: {}",
+                self.client_key
+                    .decrypt_bool(&is_eq.clone().into_boolean_block())
+            );
 
             let atom_left = new_fhe_bool(query_lut.apply(left));
             let atom_right = new_fhe_bool(query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4)));
+            println!(
+                "  atom left: ({}) {}",
+                self.client_key.decrypt_radix::<u64>(left),
+                self.client_key
+                    .decrypt_bool(&atom_left.clone().into_boolean_block())
+            );
+            println!(
+                "  atom right: ({}) {}",
+                self.client_key.decrypt_radix::<u64>(right),
+                self.client_key
+                    .decrypt_bool(&atom_right.clone().into_boolean_block())
+            );
 
             // result_bool:
             //   | if is_op: op_bool XOR negate
@@ -314,9 +331,22 @@ impl<'a> TableQueryRunner<'a> {
                 * &(&atom_left * &atom_right + !&which_op * (&atom_left + &atom_right))
                 + !is_op * (is_eq + which_op * is_lt)
                 + negate;
-
+            println!(
+                "-> result: {}",
+                self.client_key
+                    .decrypt_bool(&result_bool.clone().into_boolean_block())
+            );
             // update query lookup table
             query_lut.update(index as u8, result_bool.ct.clone());
+
+            // let index_ct: RadixCiphertext = sk.create_trivial_radix(index as u64, 4);
+            // let lut_at_index = query_lut.apply(&index_ct);
+            // println!("applied LUT at index_cy");
+            // println!(
+            //     "query LUT at index {index} after update: {}",
+            //     self.client_key
+            //         .decrypt_bool(&tfhe::integer::BooleanBlock::new_unchecked(lut_at_index))
+            // );
         }
         result_bool.ct
     }

@@ -6,7 +6,7 @@ use tfhe::core_crypto::entities::Plaintext;
 use tfhe::shortint::ciphertext::Degree;
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
-use tfhe::integer::wopbs::{encode_radix, IntegerWopbsLUT, WopbsKey};
+use tfhe::integer::wopbs::{IntegerWopbsLUT, WopbsKey};
 use tfhe::integer::{
     BooleanBlock, IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, RadixClientKey,
     ServerKey,
@@ -15,12 +15,13 @@ use tfhe::integer::{
 use std::ops::{Add, AddAssign, Mul, Not};
 
 pub mod hidden_function_lut;
+pub mod recursive_cmux_tree;
+pub mod regular_cmux_tree;
 
 pub use hidden_function_lut::QueryLUT;
 
 /// A lookup table, taking (encrypted) `u8` as input, returning (encrypted) `u32`s.
 pub struct EntryLUT<'a> {
-    max_argument: RadixCiphertext,
     lut: (
         IntegerWopbsLUT,
         IntegerWopbsLUT,
@@ -29,16 +30,10 @@ pub struct EntryLUT<'a> {
     ),
     server_key: &'a ServerKey,
     wopbs_key: &'a WopbsKey,
-    wopbs_parameters: WopbsParameters,
 }
 
 impl<'a> EntryLUT<'a> {
-    pub fn new(
-        entry: &'a Vec<u32>,
-        server_key: &'a ServerKey,
-        wopbs_key: &'a WopbsKey,
-        wopbs_parameters: WopbsParameters,
-    ) -> Self {
+    pub fn new(entry: &'a Vec<u32>, server_key: &'a ServerKey, wopbs_key: &'a WopbsKey) -> Self {
         let entry_length = entry.len();
         // the server_key.generate_lut_radix() method needs a ciphertext for
         // computing the lut size. We use num_blocks = 4, i.e. we assume the
@@ -67,11 +62,9 @@ impl<'a> EntryLUT<'a> {
         );
 
         Self {
-            max_argument,
             lut,
             server_key,
             wopbs_key,
-            wopbs_parameters,
         }
     }
 
@@ -105,59 +98,6 @@ impl<'a> EntryLUT<'a> {
         );
 
         RadixCiphertext::from_blocks(result)
-    }
-
-    /// Updates a lookup table at the given index.
-    ///
-    /// This method is mostly a copy-paste of `WopbsKey::generate_lut_radix()`.
-    pub fn update(&mut self, index: u8, value: u32) {
-        let index = index as usize;
-        let value = (
-            (value % 255) as u64,
-            ((value >> 8) % 255) as u64,
-            ((value >> 16) % 255) as u64,
-            ((value >> 24) % 255) as u64,
-        );
-
-        let basis = self.max_argument.moduli()[0];
-        let block_nb = self.max_argument.blocks().len();
-        let (wopbs_message_modulus, wopbs_carry_modulus) = (
-            self.wopbs_parameters.message_modulus.0,
-            self.wopbs_parameters.carry_modulus.0,
-        );
-        let delta: u64 = (1 << 63) / (wopbs_message_modulus * wopbs_carry_modulus) as u64;
-        let mut vec_deg_basis = vec![];
-
-        let mut modulus = 1;
-        for (i, deg) in self
-            .max_argument
-            .moduli()
-            .iter()
-            .zip(self.max_argument.blocks().iter())
-        {
-            modulus *= i;
-            let b = f64::log2((deg.degree.get() + 1) as f64).ceil() as u64;
-            vec_deg_basis.push(b);
-        }
-
-        let f_val = (
-            value.0 % modulus,
-            value.1 % modulus,
-            value.2 % modulus,
-            value.3 % modulus,
-        );
-        let encoded_f_val_iter = encode_radix(f_val.0, basis, block_nb as u64)
-            .into_iter()
-            .zip(encode_radix(f_val.1, basis, block_nb as u64).into_iter())
-            .zip(encode_radix(f_val.2, basis, block_nb as u64).into_iter())
-            .zip(encode_radix(f_val.3, basis, block_nb as u64).into_iter());
-        for (lut_number, radix_encoded_val) in encoded_f_val_iter.enumerate().take(block_nb) {
-            let (((v0, v1), v2), v3) = radix_encoded_val;
-            self.lut.0[lut_number][index] = v0 * delta;
-            self.lut.1[lut_number][index] = v1 * delta;
-            self.lut.2[lut_number][index] = v2 * delta;
-            self.lut.3[lut_number][index] = v3 * delta;
-        }
     }
 }
 
@@ -323,7 +263,7 @@ impl<'a> Mul<FheBool<'a>> for FheBool<'a> {
 }
 
 mod tests {
-    // use super::*;
+    use super::*;
     use crate::generate_keys;
 
     #[test]

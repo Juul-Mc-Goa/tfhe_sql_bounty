@@ -112,7 +112,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let headers = table.headers.clone();
 
     let encrypted_query = query.encrypt(client_key.as_ref(), &headers, false);
-    let query_runner = TableQueryRunner::new(table, &server_key, &wopbs_key, wopbs_params);
+    let query_runner = TableQueryRunner::new(
+        table,
+        client_key.as_ref(),
+        &server_key,
+        &wopbs_key,
+        wopbs_params,
+    );
 
     let ct_result = query_runner.run_fhe_query(&encrypted_query);
     let clear_result = ct_result
