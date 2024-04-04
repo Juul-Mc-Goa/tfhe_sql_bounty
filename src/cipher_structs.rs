@@ -4,7 +4,7 @@ use tfhe::core_crypto::algorithms::{
 use tfhe::core_crypto::entities::Plaintext;
 
 use tfhe::shortint::ciphertext::Degree;
-use tfhe::shortint::{Ciphertext, WopbsParameters};
+use tfhe::shortint::Ciphertext;
 
 use tfhe::integer::wopbs::{IntegerWopbsLUT, WopbsKey};
 use tfhe::integer::{
