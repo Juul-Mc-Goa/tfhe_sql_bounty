@@ -8,7 +8,8 @@ use tfhe::core_crypto::entities::*;
 use tfhe::core_crypto::fft_impl::fft64::crypto::bootstrap::FourierLweBootstrapKeyView;
 use tfhe::core_crypto::fft_impl::fft64::crypto::ggsw::{
     add_external_product_assign as inner_add_external_product_assign,
-    FourierGgswCiphertextListMutView, FourierGgswCiphertextListView,
+    add_external_product_assign_scratch, FourierGgswCiphertextListMutView,
+    FourierGgswCiphertextListView,
 };
 use tfhe::core_crypto::fft_impl::fft64::crypto::wop_pbs::{
     circuit_bootstrap_boolean, circuit_bootstrap_boolean_scratch,
@@ -74,12 +75,28 @@ pub fn vertical_packing_scratch<Scalar>(
     StackReq::try_all_of([
         // cmux_tree_lut_res
         StackReq::try_new_aligned::<Scalar>(polynomial_size.0 * glwe_size.0, CACHELINE_ALIGN)?,
-        StackReq::try_any_of([cmux_tree_memory_optimized_scratch::<Scalar>(
+        StackReq::try_any_of([cmux_tree_recursive_scratch::<Scalar>(
             glwe_size,
             polynomial_size,
             ggsw_list_count,
             fft,
         )?])?,
+    ])
+}
+
+pub fn cmux_tree_recursive_scratch<Scalar>(
+    glwe_size: GlweSize,
+    poly_size: PolynomialSize,
+    nb_layer: usize,
+    fft: FftView<'_>,
+) -> Result<StackReq, SizeOverflow> {
+    let layers_scratch =
+        StackReq::try_new_aligned::<Scalar>(poly_size.0 * glwe_size.0 * nb_layer, CACHELINE_ALIGN)?;
+
+    StackReq::try_all_of([
+        layers_scratch, // t_0
+        layers_scratch, // nb_layer * diff
+        add_external_product_assign_scratch::<Scalar>(glwe_size, poly_size, fft)?,
     ])
 }
 
@@ -90,7 +107,6 @@ pub fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimi
 >(
     lwe_list_in: &LweCiphertextList<InputCont>,
     lwe_list_out: &mut LweCiphertextList<&mut [u64]>,
-    // big_lut_as_polynomial_list: &PolynomialList<LutCont>,
     hidden_function_lut: GlweCiphertextList<&[u64]>,
     fourier_bsk: &FourierLweBootstrapKey<BskCont>,
     pfpksk_list: &LwePrivateFunctionalPackingKeyswitchKeyList<PFPKSKCont>,
@@ -303,7 +319,7 @@ pub fn cmux_tree_recursive(
         fft: FftView<'a>,
         mut stack: PodStack<'a>,
     ) {
-        println!("{current_lut_index}, {current_bit_significance}");
+        // println!("{current_lut_index}, {current_bit_significance}");
         let new_bit_significance = if current_bit_significance == 0 {
             0
         } else {
@@ -396,7 +412,7 @@ pub fn cmux_tree_recursive(
     }
 
     assert_eq!(layers.entity_count(), 1 + ggsw_list.count());
-    println!("depth of cmux tree: {}", ggsw_list.count());
+    // println!("depth of cmux tree: {}", ggsw_list.count());
 
     recursive_cmux(
         &lut,

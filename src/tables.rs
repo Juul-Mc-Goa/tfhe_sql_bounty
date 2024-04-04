@@ -1,6 +1,7 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 use tfhe::integer::wopbs::WopbsKey;
+use tfhe::integer::BooleanBlock;
 use tfhe::integer::{ClientKey, RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
@@ -231,7 +232,7 @@ impl<'a> TableQueryRunner<'a> {
         query: &EncryptedSyntaxTree,
         query_lut: &mut QueryLUT,
     ) -> Ciphertext {
-        println!("*** NEW ENTRY ***");
+        println!("\n*** NEW ENTRY ***");
         let sk = self.server_key;
 
         let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key);
@@ -255,7 +256,8 @@ impl<'a> TableQueryRunner<'a> {
         // else, loop through all atoms
 
         for (index, (is_op, left, which_op, right, negate)) in query.iter().enumerate() {
-            println!("atom n°{index}");
+            println!("atom n°{index}:");
+
             let (is_op, which_op, negate) = (
                 new_fhe_bool(is_op.clone()),
                 new_fhe_bool(which_op.clone()),
@@ -283,21 +285,19 @@ impl<'a> TableQueryRunner<'a> {
             println!(
                 "  atom left: ({}) {}",
                 self.client_key.decrypt_radix::<u64>(left),
-                self.client_key
-                    .decrypt_bool(&atom_left.clone().into_boolean_block())
+                self.client_key.decrypt_one_block(&atom_left.ct.clone())
             );
             println!(
                 "  atom right: ({}) {}",
                 self.client_key.decrypt_radix::<u64>(right),
-                self.client_key
-                    .decrypt_bool(&atom_right.clone().into_boolean_block())
+                self.client_key.decrypt_one_block(&atom_right.ct.clone())
             );
 
             // result_bool:
             //   | if is_op: op_bool XOR negate
             //   | else:   atom_bool XOR negate
             // op_bool:
-            //  | if which_bool: atom_left AND atom_right
+            //   | if which_bool: atom_left AND atom_right
             //   | else:          atom_left OR atom_right
             // atom_bool:
             //   | if which_bool: val_left <= val_right
@@ -324,26 +324,69 @@ impl<'a> TableQueryRunner<'a> {
             //                 (1 + which_op) * (atom_left + atom_right)) +
             //               (1 + is_op) * (is_eq + which_op * is_lt) +
             //               negate
-            result_bool = &is_op
-                * &(&atom_left * &atom_right + !&which_op * (&atom_left + &atom_right))
-                + !is_op * (is_eq + which_op * is_lt)
-                + negate;
+            let (
+                clear_is_op,
+                clear_which_op,
+                clear_atom_l,
+                clear_atom_r,
+                clear_eq,
+                clear_lt,
+                clear_neg,
+            ) = (
+                self.client_key.decrypt_one_block(&is_op.ct.clone()),
+                self.client_key.decrypt_one_block(&which_op.ct.clone()),
+                self.client_key.decrypt_one_block(&atom_left.ct.clone()),
+                self.client_key.decrypt_one_block(&atom_right.ct.clone()),
+                self.client_key.decrypt_one_block(&is_eq.ct.clone()),
+                self.client_key.decrypt_one_block(&is_lt.ct.clone()),
+                self.client_key.decrypt_one_block(&negate.ct.clone()),
+            );
+
+            println!("    is_op: {clear_is_op}");
+            println!("    which_op: {clear_which_op}");
+            println!("    atom left: {clear_atom_l}");
+            println!("    atom right: {clear_atom_r}");
+            println!("    is_eq: {clear_eq}");
+            println!("    is_lt: {clear_lt}");
+            println!("    negate: {clear_neg}");
+            let clear_result = clear_is_op
+                * (clear_atom_l * clear_atom_r
+                    + (1 + clear_which_op) * (clear_atom_l + clear_atom_r))
+                + (1 + clear_is_op) * (clear_eq + clear_which_op * clear_lt)
+                + clear_neg;
+            println!("    -> clear result: {clear_result}");
+
+            let summand_1_and = &atom_left * &atom_right;
+            let summand_1_or = !&which_op * (&atom_left + &atom_right);
+            let summand_1 = &is_op * &(&summand_1_and + &summand_1_or);
+            let summand_0 = !is_op * (is_eq + which_op * is_lt);
+            result_bool = &summand_1 + &summand_0 + negate;
+
+            println!(
+                "  - summand 1 (is_op = true): {}",
+                self.client_key.decrypt_one_block(&summand_1.ct)
+            );
+            println!(
+                "    - summand 1 and (which_op = true): {}",
+                self.client_key.decrypt_one_block(&summand_1_and.ct)
+            );
+            println!(
+                "  - summand 0 (which_op = false): {}",
+                self.client_key.decrypt_one_block(&summand_1_or.ct)
+            );
+
+            // result_bool = &is_op
+            //     * &(&atom_left * &atom_right + !&which_op * (&atom_left + &atom_right))
+            //     + !is_op * (is_eq + which_op * is_lt)
+            //     + negate;
+
             println!(
                 "-> result: {}",
-                self.client_key
-                    .decrypt_bool(&result_bool.clone().into_boolean_block())
+                self.client_key.decrypt_one_block(&result_bool.ct.clone())
             );
             // update query lookup table
+            println!("udpating at index {index}");
             query_lut.update(index as u8, result_bool.ct.clone());
-
-            // let index_ct: RadixCiphertext = sk.create_trivial_radix(index as u64, 4);
-            // let lut_at_index = query_lut.apply(&index_ct);
-            // println!("applied LUT at index_cy");
-            // println!(
-            //     "query LUT at index {index} after update: {}",
-            //     self.client_key
-            //         .decrypt_bool(&tfhe::integer::BooleanBlock::new_unchecked(lut_at_index))
-            // );
         }
         result_bool.ct
     }

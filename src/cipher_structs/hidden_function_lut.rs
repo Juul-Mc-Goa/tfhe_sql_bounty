@@ -103,12 +103,18 @@ impl<'a> QueryLUT<'a> {
             .wopbs_key
             .keyswitch_to_wopbs_params(self.server_key, &value);
 
+        let mut lut_at_index = self.lut.get_mut(index);
+        let (mut mask, mut body) = lut_at_index.get_mut_mask_and_body();
+        // manual embedding LWE -> GLWE
+        mask.as_mut()
+            .copy_from_slice(wopbs_value.ct.get_mask().as_ref());
+        body.as_mut()[0] = *wopbs_value.ct.get_body().data;
         // apply private functional keyswitch
-        par_private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext(
-            &self.wopbs_key.cbs_pfpksk.get(0),
-            &mut self.lut.get_mut(index),
-            &wopbs_value.ct,
-        );
+        // par_private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext(
+        //     &self.wopbs_key.cbs_pfpksk.get(0),
+        //     &mut self.lut.get_mut(index),
+        //     &wopbs_value.ct,
+        // );
     }
 
     /// Inner function called when performing table lookup. Copy-pasted from
