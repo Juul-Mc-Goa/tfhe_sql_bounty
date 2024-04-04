@@ -1,10 +1,7 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
-use tfhe::core_crypto::algorithms::glwe_sample_extraction;
-use tfhe::core_crypto::commons::traits::ContiguousEntityContainer;
-use tfhe::core_crypto::entities::LweCiphertext;
 use tfhe::integer::wopbs::WopbsKey;
-use tfhe::integer::{ClientKey, IntegerRadixCiphertext, RadixCiphertext, ServerKey};
+use tfhe::integer::{ClientKey, RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
