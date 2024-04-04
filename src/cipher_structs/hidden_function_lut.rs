@@ -13,7 +13,7 @@
 //! - `cmux_tree_memomry_optimized()`
 
 use aligned_vec::CACHELINE_ALIGN;
-use dyn_stack::{PodStack, ReborrowMut};
+use dyn_stack::{PodStack, ReborrowMut, SizeOverflow, StackReq};
 use rayon::prelude::*;
 
 use tfhe::core_crypto::algorithms::*;
@@ -26,8 +26,11 @@ use tfhe::core_crypto::fft_impl::fft64::crypto::ggsw::{
     FourierGgswCiphertextListMutView, FourierGgswCiphertextListView,
 };
 use tfhe::core_crypto::fft_impl::fft64::crypto::wop_pbs::{
-    blind_rotate_assign as wop_pbs_blind_rotate_assign, circuit_bootstrap_boolean,
-    circuit_bootstrap_boolean_vertical_packing_scratch, cmux_tree_memory_optimized_scratch,
+    // blind_rotate_assign as wop_pbs_blind_rotate_assign,
+    circuit_bootstrap_boolean,
+    circuit_bootstrap_boolean_scratch,
+    circuit_bootstrap_boolean_vertical_packing_scratch,
+    cmux_tree_memory_optimized_scratch,
 };
 use tfhe::core_crypto::fft_impl::fft64::math::fft::{Fft, FftView};
 
@@ -46,15 +49,14 @@ use tfhe::integer::{IntegerCiphertext, RadixCiphertext};
 /// An updatable lookup table, that holds the intermediary `FheBool`s used when
 /// running an encrypted SQL query.
 pub struct QueryLUT<'a> {
-    lut: GlweCiphertextList<Vec<u64>>,
-    server_key: &'a ServerKey,
-    wopbs_key: &'a WopbsKey, // use shortint API
+    pub lut: GlweCiphertextList<Vec<u64>>,
+    pub server_key: &'a ServerKey,
+    pub wopbs_key: &'a WopbsKey, // use shortint API
 }
 
 impl<'a> QueryLUT<'a> {
     pub fn new(
         size: usize,
-        integer_server_key: &'a tfhe::integer::ServerKey,
         inner_server_key: &'a ServerKey,
         wopbs_key: &'a WopbsKey,
         wopbs_parameters: WopbsParameters,
@@ -230,9 +232,6 @@ impl<'a> QueryLUT<'a> {
             count,
             self.wopbs_key.param.ciphertext_modulus,
         );
-        // NOTE: copied from PolynomialList
-        let poly_count =
-            PolynomialCount(self.lut.as_ref().container_len() / fourier_bsk.polynomial_size().0);
 
         let fft = Fft::new(fourier_bsk.polynomial_size());
         let fft = fft.as_view();
@@ -242,9 +241,7 @@ impl<'a> QueryLUT<'a> {
             computation_buffers.resize(
                 circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement::<u64>(
                     extracted_bits.lwe_ciphertext_count(),
-                    output_cbs_vp_ct.lwe_ciphertext_count(),
                     extracted_bits.lwe_size(),
-                    poly_count.clone(),
                     fourier_bsk.output_lwe_dimension().to_lwe_size(),
                     fourier_bsk.glwe_size(),
                     self.wopbs_key.cbs_pfpksk.output_polynomial_size(),
@@ -269,7 +266,6 @@ impl<'a> QueryLUT<'a> {
                             self.lut.ciphertext_modulus()
                         ),
                         bsk,
-                        poly_count,
                         &self.wopbs_key.cbs_pfpksk,
                         self.wopbs_key.param.cbs_base_log,
                         self.wopbs_key.param.cbs_level,
@@ -288,6 +284,71 @@ impl<'a> QueryLUT<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+/// Return the required memory for
+/// [`circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized`].
+fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement<
+    Scalar,
+>(
+    lwe_list_in_count: LweCiphertextCount,
+    lwe_in_size: LweSize,
+    bsk_output_lwe_size: LweSize,
+    glwe_size: GlweSize,
+    fpksk_output_polynomial_size: PolynomialSize,
+    level_cbs: DecompositionLevelCount,
+    fft: FftView<'_>,
+) -> Result<StackReq, SizeOverflow> {
+    StackReq::try_all_of([
+        // ggsw_list
+        StackReq::try_new_aligned::<c64>(
+            lwe_list_in_count.0 * fpksk_output_polynomial_size.0 / 2
+                * glwe_size.0
+                * glwe_size.0
+                * level_cbs.0,
+            CACHELINE_ALIGN,
+        )?,
+        // ggsw_res
+        StackReq::try_new_aligned::<Scalar>(
+            fpksk_output_polynomial_size.0 * glwe_size.0 * glwe_size.0 * level_cbs.0,
+            CACHELINE_ALIGN,
+        )?,
+        StackReq::try_any_of([
+            circuit_bootstrap_boolean_scratch::<Scalar>(
+                lwe_in_size,
+                bsk_output_lwe_size,
+                glwe_size,
+                fpksk_output_polynomial_size,
+                fft,
+            )?,
+            fft.forward_scratch()?,
+            vertical_packing_scratch::<Scalar>(
+                glwe_size,
+                fpksk_output_polynomial_size,
+                lwe_list_in_count.0,
+                fft,
+            )?,
+        ])?,
+    ])
+}
+
+fn vertical_packing_scratch<Scalar>(
+    glwe_size: GlweSize,
+    polynomial_size: PolynomialSize,
+    ggsw_list_count: usize,
+    fft: FftView<'_>,
+) -> Result<StackReq, SizeOverflow> {
+    StackReq::try_all_of([
+        // cmux_tree_lut_res
+        StackReq::try_new_aligned::<Scalar>(polynomial_size.0 * glwe_size.0, CACHELINE_ALIGN)?,
+        StackReq::try_any_of([cmux_tree_memory_optimized_scratch::<Scalar>(
+            glwe_size,
+            polynomial_size,
+            ggsw_list_count,
+            fft,
+        )?])?,
+    ])
+}
+
 fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized<
     InputCont,
     BskCont,
@@ -298,7 +359,6 @@ fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized<
     // big_lut_as_polynomial_list: &PolynomialList<LutCont>,
     hidden_function_lut: GlweCiphertextList<&[u64]>,
     fourier_bsk: &FourierLweBootstrapKey<BskCont>,
-    poly_count: PolynomialCount,
     pfpksk_list: &LwePrivateFunctionalPackingKeyswitchKeyList<PFPKSKCont>,
     base_log_cbs: DecompositionBaseLog,
     level_cbs: DecompositionLevelCount,
@@ -313,7 +373,6 @@ fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized<
     circuit_bootstrap_boolean_vertical_packing(
         hidden_function_lut,
         fourier_bsk.as_view(),
-        poly_count,
         lwe_list_out.as_mut_view(),
         lwe_list_in.as_view(),
         pfpksk_list.as_view(),
@@ -330,7 +389,6 @@ fn circuit_bootstrap_boolean_vertical_packing(
     // big_lut_as_polynomial_list: PolynomialList<&[Scalar]>,
     hidden_function_lut: GlweCiphertextList<&[u64]>,
     fourier_bsk: FourierLweBootstrapKeyView<'_>,
-    poly_count: PolynomialCount,
     mut lwe_out: LweCiphertextList<&mut [u64]>,
     lwe_list_in: LweCiphertextList<&[u64]>,
     pfpksk_list: LwePrivateFunctionalPackingKeyswitchKeyList<&[u64]>,
@@ -422,7 +480,6 @@ fn circuit_bootstrap_boolean_vertical_packing(
     // removed the loop as this function is meant to compute a single ciphertext
     vertical_packing(
         hidden_function_lut,
-        poly_count,
         lwe_out.get_mut(0),
         ggsw_list.as_view(),
         fft,
@@ -434,7 +491,6 @@ fn circuit_bootstrap_boolean_vertical_packing(
 // list handles computation of one output ct.
 fn vertical_packing(
     lut: GlweCiphertextList<&[u64]>,
-    poly_count: PolynomialCount,
     mut lwe_out: LweCiphertext<&mut [u64]>,
     ggsw_list: FourierGgswCiphertextListView<'_>,
     fft: FftView<'_>,
@@ -453,22 +509,23 @@ fn vertical_packing(
         lwe_out.lwe_size().to_lwe_dimension(),
     );
 
-    // Get the base 2 logarithm (rounded down) of the number of polynomials in the list i.e. if
-    // there is one polynomial, the number will be 0
-    let log_lut_number: usize =
-        (u64::BITS - 1 - lut.glwe_ciphertext_count().0.leading_zeros()) as usize;
+    // // Get the base 2 logarithm (rounded down) of the number of polynomials in the list i.e. if
+    // // there is one polynomial, the number will be 0
+    // let log_lut_number: usize =
+    //     (u64::BITS - 1 - lut.glwe_ciphertext_count().0.leading_zeros()) as usize;
 
-    let log_number_of_luts_for_cmux_tree = if log_lut_number > ggsw_list.count() {
-        // this means that we dont have enough GGSW to perform the CMux tree, we can only do the
-        // Blind rotation
-        0
-    } else {
-        log_lut_number
-    };
+    // let log_number_of_luts_for_cmux_tree = if log_lut_number > ggsw_list.count() {
+    //     // this means that we dont have enough GGSW to perform the CMux tree, we can only do the
+    //     // Blind rotation
+    //     0
+    // } else {
+    //     log_lut_number
+    // };
 
-    // split the vec of GGSW in two, the msb GGSW is for the CMux tree and the lsb GGSW is for
-    // the last blind rotation.
-    let (cmux_ggsw, br_ggsw) = ggsw_list.split_at(log_number_of_luts_for_cmux_tree);
+    // // split the vec of GGSW in two, the msb GGSW is for the CMux tree and the lsb GGSW is for
+    // // the last blind rotation.
+    // let (cmux_ggsw, br_ggsw) = ggsw_list.split_at(log_number_of_luts_for_cmux_tree);
+    let cmux_ggsw = ggsw_list;
 
     let (mut cmux_tree_lut_res_data, mut stack) =
         stack.make_aligned_with(polynomial_size.0 * glwe_size.0, CACHELINE_ALIGN, |_| {
@@ -484,33 +541,182 @@ fn vertical_packing(
     cmux_tree_memory_optimized(
         cmux_tree_lut_res.as_mut_view(),
         lut,
-        poly_count,
         cmux_ggsw,
         fft,
         stack.rb_mut(),
     );
+    // cmux_tree_recursive(
+    //     cmux_tree_lut_res.as_mut_view(),
+    //     lut,
+    //     cmux_ggsw,
+    //     fft,
+    //     stack.rb_mut(),
+    // );
 
-    wop_pbs_blind_rotate_assign(
-        cmux_tree_lut_res.as_mut_view(),
-        br_ggsw,
-        fft,
-        stack.rb_mut(),
-    );
+    // wop_pbs_blind_rotate_assign(
+    //     cmux_tree_lut_res.as_mut_view(),
+    //     br_ggsw,
+    //     fft,
+    //     stack.rb_mut(),
+    // );
 
     // sample extract of the RLWE of the Vertical packing
     extract_lwe_sample_from_glwe_ciphertext(&cmux_tree_lut_res, &mut lwe_out, MonomialDegree(0));
 }
 
+// fn cmux_tree_recursive(
+//     mut output_glwe: GlweCiphertext<&mut [u64]>,
+//     lut: GlweCiphertextList<&[u64]>,
+//     ggsw_list: FourierGgswCiphertextListView<'_>,
+//     fft: FftView<'_>,
+//     stack: PodStack<'_>,
+// ) {
+//     let glwe_size = output_glwe.glwe_size();
+//     let ciphertext_modulus = output_glwe.ciphertext_modulus();
+//     let polynomial_size = ggsw_list.polynomial_size();
+//     let nb_layer = ggsw_list.count() + 1;
+
+//     let (mut layers_data, stack) = stack.make_aligned_with(
+//         polynomial_size.0 * glwe_size.0 * nb_layer,
+//         CACHELINE_ALIGN,
+//         |_| u64::ZERO,
+//     );
+//     let mut layers = GlweCiphertextList::from_container(
+//         layers_data.as_mut(),
+//         glwe_size,
+//         polynomial_size,
+//         ciphertext_modulus,
+//     );
+
+//     fn recursive_cmux<'a>(
+//         lut: &GlweCiphertextList<&[u64]>,
+//         layers_glwe: &mut GlweCiphertextList<&mut [u64]>,
+//         boolean_list: FourierGgswCiphertextListView<'_>,
+//         current_lut_index: usize,
+//         current_bit_significance: usize,
+//         ciphertext_modulus: CiphertextModulus<u64>,
+//         polynomial_size: PolynomialSize,
+//         fft: FftView<'a>,
+//         mut stack: PodStack<'a>,
+//     ) {
+//         println!("{current_lut_index}, {current_bit_significance}");
+//         let new_bit_significance = if current_bit_significance == 0 {
+//             0
+//         } else {
+//             current_bit_significance - 1
+//         };
+//         if boolean_list.count() == 0 {
+//             layers_glwe
+//                 .get_mut(0) // layers_glwe should have only one entity
+//                 .as_mut()
+//                 .copy_from_slice(lut.get(current_lut_index).as_ref());
+//         } else {
+//             let mid = 1 << current_bit_significance;
+//             let other_lut_index = mid + current_lut_index;
+
+//             let (head, tail) = boolean_list.split_at(1);
+//             let head = FourierGgswCiphertext::from_container(
+//                 head.data(),
+//                 head.glwe_size(),
+//                 head.polynomial_size(),
+//                 head.decomposition_base_log(),
+//                 head.decomposition_level_count(),
+//             );
+
+//             // first compute layer[i+1]
+//             recursive_cmux(
+//                 lut,
+//                 &mut layers_glwe.get_sub_mut(1..),
+//                 tail,
+//                 current_lut_index,
+//                 new_bit_significance,
+//                 ciphertext_modulus.clone(),
+//                 polynomial_size.clone(),
+//                 fft,
+//                 stack.rb_mut(),
+//             );
+
+//             // copy layer[i+1] into layer[i]
+//             {
+//                 // weird iterator gymnastics because layers_glwe is a mutable reference
+//                 let mut current_and_next_iter = layers_glwe.iter_mut();
+//                 let mut current = current_and_next_iter.next().unwrap();
+//                 let next = current_and_next_iter.next().unwrap();
+//                 drop(current_and_next_iter);
+//                 current.as_mut().copy_from_slice(next.as_ref());
+//             }
+
+//             let (diff_data, mut stack) = if other_lut_index >= lut.entity_count() {
+//                 stack.rb_mut().collect_aligned(
+//                     CACHELINE_ALIGN,
+//                     layers_glwe
+//                         .get(0)
+//                         .as_ref()
+//                         .iter()
+//                         .map(|&a| 0.wrapping_sub(a)),
+//                 )
+//             } else {
+//                 recursive_cmux(
+//                     lut,
+//                     &mut layers_glwe.get_sub_mut(1..),
+//                     tail,
+//                     other_lut_index,
+//                     new_bit_significance,
+//                     ciphertext_modulus.clone(),
+//                     polynomial_size.clone(),
+//                     fft,
+//                     stack.rb_mut(),
+//                 );
+//                 stack.rb_mut().collect_aligned(
+//                     CACHELINE_ALIGN,
+//                     layers_glwe
+//                         .get(1)
+//                         .as_ref()
+//                         .iter()
+//                         .zip(layers_glwe.get(0).as_ref().iter())
+//                         .map(|(&n, &c)| n.wrapping_sub(c)),
+//                 )
+//             };
+
+//             let diff =
+//                 GlweCiphertext::from_container(&*diff_data, polynomial_size, ciphertext_modulus);
+
+//             inner_add_external_product_assign(
+//                 layers_glwe.get_mut(0),
+//                 head,
+//                 diff,
+//                 fft,
+//                 stack.rb_mut(),
+//             );
+//         }
+//     }
+
+//     assert_eq!(layers.entity_count(), 1 + ggsw_list.count());
+//     println!("depth of cmux tree: {}", ggsw_list.count());
+
+//     recursive_cmux(
+//         &lut,
+//         &mut layers,
+//         ggsw_list,
+//         0_usize,
+//         ggsw_list.count() - 1,
+//         ciphertext_modulus,
+//         polynomial_size,
+//         fft,
+//         stack,
+//     );
+
+//     output_glwe.as_mut().copy_from_slice(layers.get(0).as_ref());
+// }
+
 fn cmux_tree_memory_optimized(
     mut output_glwe: GlweCiphertext<&mut [u64]>,
     // lut_per_layer: PolynomialList<&[u64]>,
     lut_per_layer: GlweCiphertextList<&[u64]>,
-    poly_count: PolynomialCount,
     ggsw_list: FourierGgswCiphertextListView<'_>,
     fft: FftView<'_>,
     stack: PodStack<'_>,
 ) {
-    // debug_assert!(poly_count.0 == 1 << ggsw_list.count());
     debug_assert!(lut_per_layer.entity_count() == 1 << ggsw_list.count());
 
     if ggsw_list.count() > 0 {
