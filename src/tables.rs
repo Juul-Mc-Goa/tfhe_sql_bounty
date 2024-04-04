@@ -327,7 +327,6 @@ impl<'a> TableQueryRunner<'a> {
 
         let mut query_lut: QueryLUT<'_> = QueryLUT::new(
             query.len(),
-            &self.server_key,
             &inner_sk,
             &inner_wopbs,
             self.wopbs_parameters.clone(),
