@@ -160,13 +160,13 @@ pub struct TableHeaders(pub Vec<(String, CellType)>);
 impl TableHeaders {
     /// Given a column identifier, returns the index of its first element. Each element is of type
     /// u32, so an column of type u32 has 1 associated index, a column of type ShortString has 8, etc.
-    pub fn index_of(&self, column: String) -> Result<u8, String> {
-        let mut result: u8 = 0;
+    pub fn index_of(&self, column: String) -> Result<usize, String> {
+        let mut result: usize = 0;
         for (label, cell_type) in self.0.iter() {
             if label == &column {
                 return Ok(result);
             }
-            result += cell_type.len() as u8;
+            result += cell_type.len();
         }
         Err(format!("column '{column}' does not exist"))
     }

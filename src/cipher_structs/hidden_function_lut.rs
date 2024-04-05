@@ -7,15 +7,14 @@
 //! - `WopbsKey::wopbs()` (`integer` API)
 //! - `WopbsKey::circuit_bootstrapping_vertical_packing()` (`shortint` API)
 //! - `WopbsKey::circuit_bootstrap_with_bits() (`shortint` API)`
-//! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized()`
-//! - `circuit_bootstrap_boolean_vertical_packing()`
-//! - `vertical_packing()`
-//! - `cmux_tree_memomry_optimized()`
+//!
+//! Two versions of `core_crypto` functions are implemented: one which uses
+//! `cmux_tree_memory_optimized` from `core_crypto`, but with a different number
+//! of layers, and another which implements its own `cmux_tree_recursive`
+//! fonction. The corresponding modules are `regular_cmux_tree` and `recursive_cmux_tree`.
 
 use rayon::prelude::*;
 
-use tfhe::boolean::client_key;
-// use tfhe::core_crypto::algorithms::lwe_private_functional_packing_keyswitch::par_private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext;
 use tfhe::core_crypto::commons::parameters::*;
 use tfhe::core_crypto::commons::traits::*;
 use tfhe::core_crypto::entities::*;

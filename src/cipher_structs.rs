@@ -15,7 +15,9 @@ use tfhe::integer::{
 use std::ops::{Add, AddAssign, Mul, Not};
 
 pub mod hidden_function_lut;
+#[allow(dead_code)]
 pub mod recursive_cmux_tree;
+#[allow(dead_code)]
 pub mod regular_cmux_tree;
 
 pub use hidden_function_lut::QueryLUT;

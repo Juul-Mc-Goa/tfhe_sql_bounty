@@ -48,33 +48,39 @@ pub enum Node {
 #[derive(Clone, Debug)]
 pub struct WhereSyntaxTree {
     index: u8,
+    next_index: u8,
     node: Node,
 }
 
+/// Holds a tuple `(is_op, left, which_op, right, negate)`. The encoding is made as follows:
+///
+/// The first element `is_op` of the tuple encodes wether the rest of the tuple
+/// is to be understood as an atom or a boolean operator:
+/// - `is_op`:
+///   - `true`: the tuple encodes a boolean operator
+///     - `left`: index of the left child,
+///     - `which_op`:
+///       - `true`: `AND`,
+///       - `false`: `OR`,
+///     - `right`: index of the right child,
+///   - `false`: the tuple encodes an atom
+///     - `left`: column identifier,
+///     - `which_op`:
+///       - `true`: `<=`,
+///       - `false`: `=`,
+///     - `right`: value against which left is tested,
+/// - `negate`: encodes wether to negate the boolean result of `left which_op
+///    right`.
+pub type EncodedInstruction = (bool, u8, bool, u32, bool);
+
+/// Encrypted variant of `EncodedInstruction`.
+///
 /// Holds a tuple `(is_op, left, which_op, right, negate)`, where:
 /// - `is_op` is an encrypted boolean,
 /// - `left` is an encrypted u8,
 /// - `which_op` is an encrypted boolean,
 /// - `right` is an encrypted u32,
 /// - `negate` is an encrypted boolean.
-///
-/// The first element `is_op` of the tuple encodes wether the rest of the tuple
-/// is to be understood as an atom or a boolean operator:
-/// - `is_op`:
-///   - `true`: the tuple encodes a boolean operator
-///     - `left`: the (encrypted) index of the left child,
-///     - `which_op`:
-///       - `true`: `AND`,
-///       - `false`: `OR`,
-///     - `right`: the (encrypted) index of the right child,
-///   - `false`: the tuple encodes an atom
-///     - `left`: the (encrypted) column identifier,
-///     - `which_op`:
-///       - `true`: `<=`,
-///       - `false`: `=`,
-///     - `right`: the value against which left is tested,
-/// - `negate`: encodes wether to negate the boolean result of `left which_op
-///    right`.
 pub type EncryptedInstruction = (
     Ciphertext,
     RadixCiphertext,
@@ -124,19 +130,8 @@ impl AtomicCondition {
     fn cell_type(&self) -> CellType {
         CellType::from(&self.value)
     }
-    /// Negates an `AtomicCondition`.
-    fn negate(&self) -> Self {
-        let (ident, value) = (self.ident.clone(), self.value.clone());
-        let op = match self.op {
-            ComparisonOp::Equal => ComparisonOp::NotEqual,
-            ComparisonOp::NotEqual => ComparisonOp::Equal,
-            ComparisonOp::LessEqual => ComparisonOp::GreaterThan,
-            ComparisonOp::GreaterThan => ComparisonOp::LessEqual,
-            ComparisonOp::LessThan => ComparisonOp::GreaterEqual,
-            ComparisonOp::GreaterEqual => ComparisonOp::LessThan,
-        };
-        AtomicCondition { ident, op, value }
-    }
+
+    /// Creates a `String` representation of an atom for debugging purposes.
     fn to_string(&self) -> String {
         format!(
             "{} {} {}",
@@ -144,6 +139,91 @@ impl AtomicCondition {
             self.op.to_string(),
             self.value.to_string()
         )
+    }
+
+    /// Encodes an `AtomicCondition` into a (vector of) `EncodedInstruction`s.
+    pub fn encode(
+        &self,
+        headers: &TableHeaders,
+        base_atom_index: u8,
+        negate: bool,
+    ) -> Vec<EncodedInstruction> {
+        // an encoded cell value is either one u32 or eight u32
+        // - in the first case one encoded atom is produced
+        // - in the second case, eight atoms are produced, plus the seven atoms
+        //   corresponding to the ANDs.
+        let encoded_len = 2 * self.cell_type().len() - 1;
+
+        let mut result = Vec::<EncodedInstruction>::with_capacity(encoded_len);
+        let base_index = headers.index_of(self.ident.clone()).unwrap();
+        let base_atom_index = base_atom_index as usize;
+
+        match self.cell_type() {
+            CellType::ShortString => {
+                let inner_negate = match &self.op {
+                    ComparisonOp::Equal => false,
+                    ComparisonOp::NotEqual => true,
+                    o => panic!("Operator {o:?} unsupported for String."),
+                };
+
+                let is_negated = negate ^ inner_negate;
+
+                // encode each atom
+                for (i, v_i) in self.value.encode().into_iter().enumerate() {
+                    result.push((
+                        false,                  // encrypt an atom
+                        (base_index + i) as u8, // encrypt the column id
+                        false,                  // encrypt the `=` operator
+                        v_i,                    // encrypt the value to the right of `=`
+                        is_negated,             // negate if self.op is `NotEqual`
+                    ));
+                }
+
+                // encode the conjunction result[0] AND result[1] ... AND result[7]
+                let content_len = self.cell_type().len();
+                let ops_index = base_atom_index + content_len;
+
+                // result[0] AND result[1]
+                result.push((
+                    true,
+                    base_atom_index as u8,
+                    true,
+                    (base_atom_index + 1) as u32,
+                    false,
+                ));
+
+                // result[something + i] = result[i] AND result[something + i - 1]
+                for i in 2..content_len {
+                    result.push((
+                        true,
+                        (base_atom_index + i) as u8,
+                        true,
+                        (ops_index + i - 2) as u32,
+                        false,
+                    ))
+                }
+            }
+            _ => {
+                // every other type is encoded as one u32
+                let u32_value = self.value.encode()[0];
+                let (op, inner_negate, val) = match self.op {
+                    ComparisonOp::Equal => (false, false, u32_value),
+                    ComparisonOp::NotEqual => (false, true, u32_value),
+                    ComparisonOp::LessEqual => (true, false, u32_value),
+                    ComparisonOp::GreaterThan => (true, true, u32_value), // a > b <=> not(a <= b)
+                    ComparisonOp::LessThan => (true, false, u32_value - 1), // a < b <=> a <= b-1
+                    ComparisonOp::GreaterEqual => (true, true, u32_value - 1), // a >= b <=> not(a <= b-1)
+                };
+                result.push((
+                    false,                   // encrypt an atom
+                    base_index as u8,        // the column index
+                    op,                      // the operator
+                    val,                     // the value
+                    (negate ^ inner_negate), // negate the result ?
+                ));
+            }
+        }
+        result
     }
 
     /// Encrypts itself into an `Vec<EncryptedInstruction>`.
@@ -163,49 +243,21 @@ impl AtomicCondition {
         &self,
         client_key: &ClientKey,
         headers: &TableHeaders,
+        base_atom_index: u8,
         negate: bool,
     ) -> Vec<EncryptedInstruction> {
-        let mut result = Vec::<EncryptedInstruction>::with_capacity(self.cell_type().len());
-        let base_index = headers.index_of(self.ident.clone()).unwrap();
-
-        match self.cell_type() {
-            CellType::ShortString => {
-                let is_negated = match &self.op {
-                    ComparisonOp::Equal => false,
-                    ComparisonOp::NotEqual => true,
-                    o => panic!("Operator {o:?} unsupported for String."),
-                };
-                for (i, ct_i) in self.value.encrypt(&client_key).into_iter().enumerate() {
-                    result.push((
-                        client_key.encrypt_bool(false).into_inner(), // encrypt an atom
-                        client_key.encrypt_radix(base_index + (i as u8), 4), // encrypt the column id
-                        client_key.encrypt_bool(false).into_inner(), // encrypt the `=` operator
-                        ct_i, // encrypt the value to the right of `=`
-                        client_key.encrypt_one_block(is_negated as u64), // negate if self.op is `NotEqual`
-                    ));
-                }
-            }
-            _ => {
-                // every other type is encoded as one u32
-                let u32_value = self.value.encode()[0];
-                let (op, inner_negate, val) = match self.op {
-                    ComparisonOp::Equal => (false, false, u32_value),
-                    ComparisonOp::NotEqual => (false, true, u32_value),
-                    ComparisonOp::LessEqual => (true, false, u32_value),
-                    ComparisonOp::GreaterThan => (true, true, u32_value), // a > b <=> not(a <= b)
-                    ComparisonOp::LessThan => (true, false, u32_value - 1), // a < b <=> a <= b-1
-                    ComparisonOp::GreaterEqual => (true, true, u32_value - 1), // a >= b <=> not(a <= b-1)
-                };
-                result.push((
-                    client_key.encrypt_bool(false).into_inner(), // encrypt an atom
-                    client_key.encrypt_radix(base_index, 4),     // encrypt the column id
-                    client_key.encrypt_one_block(op as u64),
-                    client_key.encrypt_radix(val, 16),
-                    client_key.encrypt_one_block((negate ^ inner_negate) as u64),
-                ));
-            }
-        }
-        result
+        self.encode(headers, base_atom_index, negate)
+            .iter()
+            .map(|a| {
+                (
+                    client_key.encrypt_one_block(a.0 as u64),
+                    client_key.encrypt_radix(a.1, 4),
+                    client_key.encrypt_one_block(a.2 as u64),
+                    client_key.encrypt_radix(a.3 as u64, 16),
+                    client_key.encrypt_one_block(a.4 as u64),
+                )
+            })
+            .collect()
     }
 }
 
@@ -238,6 +290,7 @@ impl From<(Ident, BinaryOperator, Ident)> for AtomicCondition {
 
 impl WhereSyntaxTree {
     /// Stringifies a `WhereSyntaxTree` for debugging purposes.
+    #[allow(dead_code)]
     fn to_string_lines(&self) -> Vec<String> {
         let indent_closure =
             |v: Vec<String>| v.iter().map(|s| format!("  {s}")).collect::<Vec<String>>();
@@ -262,51 +315,61 @@ impl WhereSyntaxTree {
     }
 
     /// Stringifies a `WhereSyntaxTree` for debugging purposes.
+    #[allow(dead_code)]
     pub fn to_string(&self) -> String {
         self.to_string_lines().join("\n")
     }
 
-    /// Encrypts the syntax tree as a vector of elements `(encrypted_atom, op)` where
-    /// `op` is a boolean:
-    /// - `op == true`: apply `AND` operator,
-    /// - `op == false`: apply `OR` operator.
-    /// The final element's `op` is ignored.
-    ///
-    /// <div class="warning">This method assumes that the syntax tree is in disjunctive normal form.</div>
+    /// Encodes a `WhereSyntaxTree` as a vector of `EncodedInstruction`s.
+    pub fn encode(&self, headers: &TableHeaders, negate: bool) -> Vec<EncodedInstruction> {
+        match &self.node {
+            Node::Atom(a) => a.encode(headers, self.index, negate),
+            Node::And(a, b) => {
+                let mut result = a.encode(headers, false);
+                result.append(&mut b.encode(headers, false));
+                result.push((
+                    true,           // encode operator
+                    a.index,        // encode left index
+                    true,           // encode AND
+                    b.index as u32, // encode right index
+                    negate,         // encode negate
+                ));
+                result
+            }
+            Node::Or(a, b) => {
+                let mut result = a.encode(headers, false);
+                result.append(&mut b.encode(headers, false));
+                result.push((
+                    true,           // encode operator
+                    a.index,        // encode left index
+                    false,          // encode OR
+                    b.index as u32, // encode right index
+                    negate,         // encode negate
+                ));
+                result
+            }
+            Node::Not(wst) => wst.encode(headers, !negate),
+        }
+    }
+
     pub fn encrypt(
         &self,
         client_key: &ClientKey,
         headers: &TableHeaders,
         negate: bool,
     ) -> EncryptedSyntaxTree {
-        match &self.node {
-            Node::Atom(a) => a.encrypt(client_key, headers, negate),
-            Node::And(a, b) => {
-                let mut result = a.encrypt(client_key, headers, false);
-                result.append(&mut b.encrypt(client_key, headers, false));
-                result.push((
-                    client_key.encrypt_bool(true).into_inner(), // encrypt operator
-                    client_key.encrypt_radix(a.index, 4),       // encrypt left index
-                    client_key.encrypt_bool(true).into_inner(), // encrypt AND
-                    client_key.encrypt_radix(b.index, 16),      // encrypt right index
-                    client_key.encrypt_bool(negate).into_inner(), // encrypt negate
-                ));
-                result
-            }
-            Node::Or(a, b) => {
-                let mut result = a.encrypt(client_key, headers, false);
-                result.append(&mut b.encrypt(client_key, headers, false));
-                result.push((
-                    client_key.encrypt_bool(true).into_inner(), // encrypt operator
-                    client_key.encrypt_radix(a.index, 4),       // encrypt left index
-                    client_key.encrypt_bool(false).into_inner(), // encrypt OR
-                    client_key.encrypt_radix(b.index, 16),      // encrypt right index
-                    client_key.encrypt_bool(negate).into_inner(), // encrypt negate
-                ));
-                result
-            }
-            Node::Not(_) => panic!("Encountered a NOT operator during encryption."),
-        }
+        self.encode(headers, negate)
+            .into_iter()
+            .map(|(is_op, left, which_op, right, negate)| {
+                (
+                    client_key.encrypt_one_block(is_op as u64),
+                    client_key.encrypt_radix(left as u64, 4),
+                    client_key.encrypt_one_block(which_op as u64),
+                    client_key.encrypt_radix(right as u64, 16),
+                    client_key.encrypt_one_block(negate as u64),
+                )
+            })
+            .collect()
     }
 }
 
@@ -324,6 +387,7 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                 let index = child.index; // Not gates are simplified during encryption
                 Self {
                     index,
+                    next_index: child.next_index,
                     node: Node::Not(Box::new(child)),
                 }
             }
@@ -334,16 +398,24 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                 ref right,
             } => match (left.as_ref().to_owned(), right.as_ref().to_owned()) {
                 // builds an Atom from a SQL expression `column OP value`
-                (Expr::Identifier(i_left), Expr::Value(v_right)) => Self {
-                    index: parent_id,
-                    node: Node::Atom(AtomicCondition::from((i_left, op.to_owned(), v_right))),
-                },
-                (Expr::Identifier(i_left), Expr::Identifier(i_right))
-                    if op == &BinaryOperator::Eq =>
-                {
+                (Expr::Identifier(i_left), Expr::Value(v_right)) => {
+                    let atom = AtomicCondition::from((i_left, op.to_owned(), v_right));
+                    let next_index = parent_id + atom.cell_type().len() as u8;
                     Self {
                         index: parent_id,
-                        node: Node::Atom(AtomicCondition::from((i_left, op.to_owned(), i_right))),
+                        next_index,
+                        node: Node::Atom(atom),
+                    }
+                }
+                (Expr::Identifier(i_left), Expr::Identifier(i_right))
+                    if op == &BinaryOperator::Eq || op == &BinaryOperator::NotEq =>
+                {
+                    let atom = AtomicCondition::from((i_left, op.to_owned(), i_right));
+                    let next_index = parent_id + atom.cell_type().len() as u8;
+                    Self {
+                        index: parent_id,
+                        next_index,
+                        node: Node::Atom(atom),
                     }
                 }
                 // recursively builds a syntax tree from a SQL expression `l OP r`
@@ -351,15 +423,17 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                 // and l, r are SQL expressions
                 (l, r) => {
                     let left = Self::from((parent_id, l.clone()));
-                    let right = Self::from((left.index + 1, r.clone()));
-                    let index = right.index + 1;
+                    let right = Self::from((left.next_index, r.clone()));
+                    let index = right.next_index;
                     match op {
                         BinaryOperator::And => Self {
                             index,
+                            next_index: index + 1,
                             node: Node::And(Box::new(left), Box::new(right)),
                         },
                         BinaryOperator::Or => Self {
                             index,
+                            next_index: index + 1,
                             node: Node::Or(Box::new(left), Box::new(right)),
                         },
                         _ => panic!("unknown expression: {l} {op} {r}"),
