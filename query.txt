@@ -1,1 +1,1 @@
-SELECT * FROM table_1 WHERE (some_int = 0 OR some_bool = false)
+SELECT * FROM table_1 WHERE (some_int = 3 AND some_bool = true)
