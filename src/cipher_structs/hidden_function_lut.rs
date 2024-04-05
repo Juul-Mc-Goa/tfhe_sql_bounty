@@ -14,7 +14,8 @@
 
 use rayon::prelude::*;
 
-use tfhe::core_crypto::algorithms::lwe_private_functional_packing_keyswitch::par_private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext;
+use tfhe::boolean::client_key;
+// use tfhe::core_crypto::algorithms::lwe_private_functional_packing_keyswitch::par_private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext;
 use tfhe::core_crypto::commons::parameters::*;
 use tfhe::core_crypto::commons::traits::*;
 use tfhe::core_crypto::entities::*;
@@ -31,6 +32,7 @@ use tfhe::shortint::{
 use tfhe::integer::IntegerCiphertext;
 
 use super::recursive_cmux_tree::*;
+// use super::regular_cmux_tree::*;
 
 /// An updatable lookup table, that holds the intermediary `FheBool`s used when
 /// running an encrypted SQL query.
@@ -105,14 +107,34 @@ impl<'a> QueryLUT<'a> {
 
         let mut lut_at_index = self.lut.get_mut(index);
         let (mut mask, mut body) = lut_at_index.get_mut_mask_and_body();
+
         // manual embedding LWE -> GLWE
         mask.as_mut()
             .copy_from_slice(wopbs_value.ct.get_mask().as_ref());
+
+        // perform the (opposite) steps in extract_lwe_sample_from_glwe_ciphertext in reverse order
+        // in this function, the steps are:
+        // 1. reverse the mask
+        // 2. mutate mask[0..opposite_count] <- - mask[0..opposite_count]
+        // 3. rotate the result: mask.rotate_left(opposite_count)
+        use tfhe::core_crypto::algorithms::slice_algorithms::slice_wrapping_opposite_assign;
+        let opposite_count = mask.as_ref().len() - 1;
+
+        mask.as_mut().rotate_right(opposite_count);
+        slice_wrapping_opposite_assign(&mut mask.as_mut()[0..opposite_count]);
+        mask.as_mut().reverse();
+
+        // copy the input body into the 0th coefficient of the output body
         body.as_mut()[0] = *wopbs_value.ct.get_body().data;
-        // apply private functional keyswitch
-        // par_private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext(
-        //     &self.wopbs_key.cbs_pfpksk.get(0),
-        //     &mut self.lut.get_mut(index),
+
+        // private functional packing with the last pfpksk
+        // use tfhe::core_crypto::algorithms::lwe_private_functional_packing_keyswitch::private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext;
+        // private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext(
+        //     &self
+        //         .wopbs_key
+        //         .cbs_pfpksk
+        //         .get(self.wopbs_key.cbs_pfpksk.entity_count() - 1),
+        //     &mut lut_at_index,
         //     &wopbs_value.ct,
         // );
     }
@@ -192,11 +214,8 @@ impl<'a> QueryLUT<'a> {
     {
         let output_ciphertext_count = LweCiphertextCount(1);
 
-        let output_list = self.circuit_bootstrap_with_bits(
-            extracted_bits_blocks,
-            LweCiphertextCount(1),
-            // LweCiphertextCount(vec_lut.output_ciphertext_count().0),
-        );
+        let output_list =
+            self.circuit_bootstrap_with_bits(extracted_bits_blocks, LweCiphertextCount(1));
 
         let output_container = output_list.into_container();
         let ciphertext_modulus = self.wopbs_key.param.ciphertext_modulus;

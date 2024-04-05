@@ -356,6 +356,11 @@ impl<'a> TableQueryRunner<'a> {
                 + clear_neg;
             println!("    -> clear result: {clear_result}");
 
+            println!(
+                "   - !which_op: {}",
+                self.client_key.decrypt_one_block(&(!&which_op).ct)
+            );
+
             let summand_1_and = &atom_left * &atom_right;
             let summand_1_or = !&which_op * (&atom_left + &atom_right);
             let summand_1 = &is_op * &(&summand_1_and + &summand_1_or);
@@ -371,14 +376,21 @@ impl<'a> TableQueryRunner<'a> {
                 self.client_key.decrypt_one_block(&summand_1_and.ct)
             );
             println!(
-                "  - summand 0 (which_op = false): {}",
+                "    - summand 1 or (which_op = false): {}",
                 self.client_key.decrypt_one_block(&summand_1_or.ct)
+            );
+            println!(
+                "  - summand 0 (is_op = false): {}",
+                self.client_key.decrypt_one_block(&summand_0.ct)
             );
 
             // result_bool = &is_op
             //     * &(&atom_left * &atom_right + !&which_op * (&atom_left + &atom_right))
             //     + !is_op * (is_eq + which_op * is_lt)
             //     + negate;
+
+            // enforce that result_bool encrypts either 0 or 1
+            result_bool = new_fhe_bool(result_bool.into_boolean_block().into_inner());
 
             println!(
                 "-> result: {}",
