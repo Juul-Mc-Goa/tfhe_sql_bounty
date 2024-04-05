@@ -1,3 +1,15 @@
+//! Reimplementation of `core_crypto` functions, used for "hidden" lookup tables.
+//!
+//! Memory requirements reimplementations:
+//! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement`
+//! - `vertical_packing_scratch`
+//!
+//! Other functions:
+//! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized`
+//! - `circuit_bootstrap_boolean_vertical_packing`
+//! - `vertical_packing`
+//! - `cmux_tree_memory_optimized`
+
 use aligned_vec::CACHELINE_ALIGN;
 use dyn_stack::{PodStack, ReborrowMut, SizeOverflow, StackReq};
 

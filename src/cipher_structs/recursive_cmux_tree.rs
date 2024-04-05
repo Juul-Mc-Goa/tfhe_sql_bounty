@@ -1,3 +1,16 @@
+//! Reimplementation of `core_crypto` functions, used for "hidden" lookup tables.
+//!
+//! Memory requirements reimplementations:
+//! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement`
+//! - `vertical_packing_scratch`
+//! - `cmux_tree_recursive_scratch`
+//!
+//! Other functions:
+//! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized`
+//! - `circuit_bootstrap_boolean_vertical_packing`
+//! - `vertical_packing`
+//! - `cmux_tree_recursive` (replaces `cmux_tree_memory_optimized`)
+
 use aligned_vec::CACHELINE_ALIGN;
 use dyn_stack::{PodStack, ReborrowMut, SizeOverflow, StackReq};
 
@@ -13,7 +26,7 @@ use tfhe::core_crypto::fft_impl::fft64::crypto::ggsw::{
 };
 use tfhe::core_crypto::fft_impl::fft64::crypto::wop_pbs::{
     circuit_bootstrap_boolean, circuit_bootstrap_boolean_scratch,
-    circuit_bootstrap_boolean_vertical_packing_scratch, cmux_tree_memory_optimized_scratch,
+    circuit_bootstrap_boolean_vertical_packing_scratch,
 };
 use tfhe::core_crypto::fft_impl::fft64::math::fft::FftView;
 
@@ -66,6 +79,7 @@ pub fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimi
     ])
 }
 
+/// Return the required memory for [`vertical_packing`].
 pub fn vertical_packing_scratch<Scalar>(
     glwe_size: GlweSize,
     polynomial_size: PolynomialSize,
@@ -84,6 +98,7 @@ pub fn vertical_packing_scratch<Scalar>(
     ])
 }
 
+/// Return the required memory for [`cmux_tree_recursive`].
 pub fn cmux_tree_recursive_scratch<Scalar>(
     glwe_size: GlweSize,
     poly_size: PolynomialSize,
@@ -94,7 +109,7 @@ pub fn cmux_tree_recursive_scratch<Scalar>(
         StackReq::try_new_aligned::<Scalar>(poly_size.0 * glwe_size.0 * nb_layer, CACHELINE_ALIGN)?;
 
     StackReq::try_all_of([
-        layers_scratch, // t_0
+        layers_scratch, // layers
         layers_scratch, // nb_layer * diff
         add_external_product_assign_scratch::<Scalar>(glwe_size, poly_size, fft)?,
     ])
@@ -134,9 +149,6 @@ pub fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimi
 }
 
 pub fn circuit_bootstrap_boolean_vertical_packing(
-    // NOTE: the LUT should fit in one polynomial, as its input is an encrypted u8,
-    // and its output is a single ciphertext.
-    // big_lut_as_polynomial_list: PolynomialList<&[Scalar]>,
     hidden_function_lut: GlweCiphertextList<&[u64]>,
     fourier_bsk: FourierLweBootstrapKeyView<'_>,
     mut lwe_out: LweCiphertextList<&mut [u64]>,
@@ -237,8 +249,6 @@ pub fn circuit_bootstrap_boolean_vertical_packing(
     );
 }
 
-// NOTE: this is called for every output ciphertext computation: thus the lut
-// list handles computation of one output ct.
 pub fn vertical_packing(
     lut: GlweCiphertextList<&[u64]>,
     mut lwe_out: LweCiphertext<&mut [u64]>,
@@ -284,6 +294,17 @@ pub fn vertical_packing(
     extract_lwe_sample_from_glwe_ciphertext(&cmux_tree_lut_res, &mut lwe_out, MonomialDegree(0));
 }
 
+/// homomorphic computation of a hidden lookup table.
+///
+/// Argument `ggsw_list` is meant to be a list of encrypted booleans.
+///
+/// Uses the following fact: if `lut` is a list of size $2^n$, $0 \leq k \leq 2^n$ is an integer
+/// with binary decomposition `b: [bool; n]`, and we write `lut[b]` for `lut[k]`, we have:
+/// `lut[b] = cmux(b[0], lut1[tail], lut0[tail])` where:
+/// - `tail = b[1..]`
+/// - `lut0 = lut[..2^(n-1)]`
+/// - `lut1 = lut[2^(n-1)..]`
+/// Thus no blind rotation is performed.
 pub fn cmux_tree_recursive(
     mut output_glwe: GlweCiphertext<&mut [u64]>,
     lut: GlweCiphertextList<&[u64]>,
@@ -319,7 +340,6 @@ pub fn cmux_tree_recursive(
         fft: FftView<'a>,
         mut stack: PodStack<'a>,
     ) {
-        // println!("{current_lut_index}, {current_bit_significance}");
         let new_bit_significance = if current_bit_significance == 0 {
             0
         } else {
@@ -412,7 +432,6 @@ pub fn cmux_tree_recursive(
     }
 
     assert_eq!(layers.entity_count(), 1 + ggsw_list.count());
-    // println!("depth of cmux tree: {}", ggsw_list.count());
 
     recursive_cmux(
         &lut,
