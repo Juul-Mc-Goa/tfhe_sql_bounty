@@ -298,12 +298,21 @@ pub fn vertical_packing(
 ///
 /// Argument `ggsw_list` is meant to be a list of encrypted booleans.
 ///
-/// Uses the following fact: if `lut` is a list of size $2^n$, $0 \leq k \leq 2^n$ is an integer
-/// with binary decomposition `b: [bool; n]`, and we write `lut[b]` for `lut[k]`, we have:
-/// `lut[b] = cmux(b[0], lut1[tail], lut0[tail])` where:
+/// Uses the following fact:
+/// 1. if `lut` is a list of size $2^n$,
+/// 2. if $0 \leq k \leq 2^n$ is an integer with MSB binary decomposition `b:
+/// [bool; n]`, and we write `lut[b]` for `lut[k]`,
+///
+/// then we have:
+/// ```rust
+/// lut[b] = cmux(b[0], lut1[tail], lut0[tail])
+/// ```
+/// where:
 /// - `tail = b[1..]`
-/// - `lut0 = lut[..2^(n-1)]`
-/// - `lut1 = lut[2^(n-1)..]`
+/// - `lut0 = lut[..split_index]`
+/// - `lut1 = lut[split_index..]`
+/// - `split_index` is equal to $2^{n-1}$.
+///
 /// Thus no blind rotation is performed.
 pub fn cmux_tree_recursive(
     mut output_glwe: GlweCiphertext<&mut [u64]>,

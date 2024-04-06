@@ -52,23 +52,25 @@ pub struct WhereSyntaxTree {
     node: Node,
 }
 
-/// Holds a tuple `(is_op, left, which_op, right, negate)`. The encoding is made as follows:
+/// Holds a tuple `(is_op, left, which_op, right, negate)`. Each tuple represents
+/// either one `WhereSyntaxTree::Atom` (unless the value type is `ShortString`) or
+/// one `WhereSyntaxTree::Node`. Each `Atom` value is encoded as one `u32`, except
+/// `ShortString` which is encoded as a eight `u32`s.
 ///
-/// The first element `is_op` of the tuple encodes wether the rest of the tuple
-/// is to be understood as an atom or a boolean operator:
+/// The encoding is made as follows:
 /// - `is_op`:
-///   - `true`: the tuple encodes a boolean operator
-///     - `left`: index of the left child,
-///     - `which_op`:
-///       - `true`: `AND`,
-///       - `false`: `OR`,
-///     - `right`: index of the right child,
-///   - `false`: the tuple encodes an atom
-///     - `left`: column identifier,
-///     - `which_op`:
-///       - `true`: `<=`,
-///       - `false`: `=`,
-///     - `right`: value against which left is tested,
+///   - `true`: the tuple encodes a binary `Node`
+///     1. `left`: index of the left child,
+///     2. `which_op`:
+///         - `true`: `AND`,
+///         - `false`: `OR`,
+///     3. `right`: index of the right child,
+///   - `false`: the tuple encodes an `Atom`
+///     1. `left`: column identifier,
+///     2. `which_op`:
+///         - `true`: `<=`,
+///         - `false`: `=`,
+///     3. `right`: value against which `left` is tested,
 /// - `negate`: encodes wether to negate the boolean result of `left which_op
 ///    right`.
 pub type EncodedInstruction = (bool, u8, bool, u32, bool);
@@ -112,6 +114,7 @@ impl From<BinaryOperator> for ComparisonOp {
 }
 
 impl ComparisonOp {
+    /// Creates a `String` representation of a `ComparisonOp` for debugging purposes.
     fn to_string(&self) -> String {
         match self {
             ComparisonOp::Equal => "=",
@@ -126,7 +129,7 @@ impl ComparisonOp {
 }
 
 impl AtomicCondition {
-    /// Extracts the type of a cell (int, unsigned int, or short string).
+    /// Extracts the type of a cell appearing in an `AtomicCondition`.
     fn cell_type(&self) -> CellType {
         CellType::from(&self.value)
     }
@@ -141,7 +144,8 @@ impl AtomicCondition {
         )
     }
 
-    /// Encodes an `AtomicCondition` into a (vector of) `EncodedInstruction`s.
+    /// Encodes an `AtomicCondition` into a (vector of) [`EncodedInstruction`]s.
+    /// See there for how an atomic condition is encoded.
     pub fn encode(
         &self,
         headers: &TableHeaders,
@@ -224,40 +228,6 @@ impl AtomicCondition {
             }
         }
         result
-    }
-
-    /// Encrypts itself into an `Vec<EncryptedInstruction>`.
-    ///
-    /// # Inputs:
-    /// - `client_key` is used for encryption,
-    /// - `headers` is used to get an `u8` from a column identifier.
-    /// # Outputs:
-    /// a vector of `EncryptedInstruction`, each element being:
-    /// - at index 0: an encryption of `false`,
-    /// - at index 1: the encrypted u8 identifying a column,
-    /// - at index 2: an encrypted `bool` for choosing an operator. If `true` then use `<=`,
-    ///     otherwise use `=`,
-    /// - at index 3: the encrypted value against which the column is tested,
-    /// - at index 4: an encrypted `bool` for negating the boolean result of `column OP value`.
-    pub fn encrypt(
-        &self,
-        client_key: &ClientKey,
-        headers: &TableHeaders,
-        base_atom_index: u8,
-        negate: bool,
-    ) -> Vec<EncryptedInstruction> {
-        self.encode(headers, base_atom_index, negate)
-            .iter()
-            .map(|a| {
-                (
-                    client_key.encrypt_one_block(a.0 as u64),
-                    client_key.encrypt_radix(a.1, 4),
-                    client_key.encrypt_one_block(a.2 as u64),
-                    client_key.encrypt_radix(a.3 as u64, 16),
-                    client_key.encrypt_one_block(a.4 as u64),
-                )
-            })
-            .collect()
     }
 }
 
@@ -348,10 +318,13 @@ impl WhereSyntaxTree {
                 ));
                 result
             }
-            Node::Not(wst) => wst.encode(headers, !negate),
+            Node::Not(node) => node.encode(headers, !negate),
         }
     }
 
+    /// Encrypts a `WhereSyntaxTree`.
+    ///
+    /// First encodes itself, then encrypt each element of the resulting vector.
     pub fn encrypt(
         &self,
         client_key: &ClientKey,
@@ -373,17 +346,21 @@ impl WhereSyntaxTree {
     }
 }
 
-/// Builds an `WhereSyntaxTree` from a `sqlparser::Expr`. This is used to discard all
-/// unnecessary data that comes along a `sqlparser::Expr`.
+/// Builds an `WhereSyntaxTree` from a `base_index: u8` and a `sqlparser::Expr`.
+/// This is used to discard all unnecessary data that comes along a
+/// `sqlparser::Expr`.
+///
+/// The argument `base_index` is used when encoding the `WhereSyntaxTree`. See at
+/// [`EncodedInstruction`] for more explanation.
 impl From<(u8, Expr)> for WhereSyntaxTree {
-    fn from((parent_id, expr): (u8, Expr)) -> Self {
+    fn from((base_index, expr): (u8, Expr)) -> Self {
         match expr {
-            Expr::Nested(e) => Self::from((parent_id, e.as_ref().to_owned())),
+            Expr::Nested(e) => Self::from((base_index, e.as_ref().to_owned())),
             Expr::UnaryOp {
                 op: UnaryOperator::Not,
                 expr: e,
             } => {
-                let child = Self::from((parent_id, e.as_ref().to_owned()));
+                let child = Self::from((base_index, e.as_ref().to_owned()));
                 let index = child.index; // Not gates are simplified during encryption
                 Self {
                     index,
@@ -400,9 +377,9 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                 // builds an Atom from a SQL expression `column OP value`
                 (Expr::Identifier(i_left), Expr::Value(v_right)) => {
                     let atom = AtomicCondition::from((i_left, op.to_owned(), v_right));
-                    let next_index = parent_id + atom.cell_type().len() as u8;
+                    let next_index = base_index + atom.cell_type().len() as u8;
                     Self {
-                        index: parent_id,
+                        index: base_index,
                         next_index,
                         node: Node::Atom(atom),
                     }
@@ -411,9 +388,9 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                     if op == &BinaryOperator::Eq || op == &BinaryOperator::NotEq =>
                 {
                     let atom = AtomicCondition::from((i_left, op.to_owned(), i_right));
-                    let next_index = parent_id + atom.cell_type().len() as u8;
+                    let next_index = base_index + atom.cell_type().len() as u8;
                     Self {
-                        index: parent_id,
+                        index: base_index,
                         next_index,
                         node: Node::Atom(atom),
                     }
@@ -422,7 +399,7 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                 // where OP is one of AND, OR
                 // and l, r are SQL expressions
                 (l, r) => {
-                    let left = Self::from((parent_id, l.clone()));
+                    let left = Self::from((base_index, l.clone()));
                     let right = Self::from((left.next_index, r.clone()));
                     let index = right.next_index;
                     match op {
