@@ -14,3 +14,6 @@ tfhe = { version = "*", features = ["boolean", "integer", "shortint", "x86_64-un
 csv =  { version = "*" }
 serde =  { version = "*" }
 sqlparser=  { version = "*" }
+
+[package.metadata.docs.rs]
+rustdoc-args = [ "--html-in-header", "katex-header.html" ]
