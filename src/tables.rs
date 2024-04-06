@@ -224,6 +224,7 @@ impl<'a> TableQueryRunner<'a> {
     /// - `a XOR b` becomes `a+b`,
     /// - `a OR b` becomes `a+b+a*b`,
     /// - `NOT a` becomes `1+a`.
+    ///
     /// Then the boolean formulas are simplified so as to minimize the number of
     /// multiplications, using the fact that addition is much faster than PBS.
     fn run_query_on_entry(
