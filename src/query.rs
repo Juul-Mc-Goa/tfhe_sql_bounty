@@ -52,8 +52,8 @@ pub enum WhereSyntaxTree {
 ///   - `true`: the tuple encodes a binary `Node`
 ///     1. `left`: index of the left child,
 ///     2. `which_op`:
-///         - `true`: `AND`,
-///         - `false`: `OR`,
+///         - `true`: `OR`,
+///         - `false`: `AND`,
 ///     3. `right`: index of the right child,
 ///   - `false`: the tuple encodes an `Atom`
 ///     1. `left`: column identifier,
@@ -197,7 +197,7 @@ impl AtomicCondition {
                 result.push((
                     true,
                     base_atom_index as u8,
-                    true,
+                    false,
                     (base_atom_index + 1) as u32,
                     false,
                 ));
@@ -207,7 +207,7 @@ impl AtomicCondition {
                     result.push((
                         true,
                         (base_atom_index + i) as u8,
-                        true,
+                        false,
                         (ops_index + i - 2) as u32,
                         false,
                     ))
@@ -343,10 +343,10 @@ impl WhereSyntaxTree {
             | WhereSyntaxTree::Or(a, b)
             | WhereSyntaxTree::Nor(a, b) => {
                 let (which_op, negate) = match &self {
-                    WhereSyntaxTree::And(_, _) => (true, false),
-                    WhereSyntaxTree::Nand(_, _) => (true, true),
-                    WhereSyntaxTree::Or(_, _) => (false, false),
-                    WhereSyntaxTree::Nor(_, _) => (false, true),
+                    WhereSyntaxTree::And(_, _) => (false, false),
+                    WhereSyntaxTree::Nand(_, _) => (false, true),
+                    WhereSyntaxTree::Or(_, _) => (true, false),
+                    WhereSyntaxTree::Nor(_, _) => (true, true),
                     WhereSyntaxTree::Atom(_) => unreachable!(),
                 };
                 let mut result = a.encode_with_index(headers, base_index);
