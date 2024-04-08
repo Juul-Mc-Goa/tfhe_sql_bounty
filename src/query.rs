@@ -32,24 +32,14 @@ pub struct AtomicCondition {
     pub value: CellContent,
 }
 
+/// A simple enum holding the syntax tree to the right of the `WHERE` keyword.
 #[derive(Clone, Debug)]
-pub enum Node {
+pub enum WhereSyntaxTree {
     Atom(AtomicCondition),
-    Not(Box<WhereSyntaxTree>),
     And(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
     Or(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
-}
-
-/// A simple enum holding the syntax tree to the right of the `WHERE` keyword.
-///
-/// The field `index` is used during encryption: an encrypted `WhereSyntaxTree` is
-/// a vector of `EncryptedInstruction` (each of which encrypts a `Node`), `index` holds
-/// the location of the encrypted `Node` in that vector.
-#[derive(Clone, Debug)]
-pub struct WhereSyntaxTree {
-    index: u8,
-    next_index: u8,
-    node: Node,
+    Nand(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
+    Nor(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
 }
 
 /// Holds a tuple `(is_op, left, which_op, right, negate)`. Each tuple represents
@@ -114,6 +104,18 @@ impl From<BinaryOperator> for ComparisonOp {
 }
 
 impl ComparisonOp {
+    /// Convenience method for negating a comparison.
+    pub fn negate(&mut self) {
+        *self = match self {
+            ComparisonOp::Equal => ComparisonOp::NotEqual,
+            ComparisonOp::NotEqual => ComparisonOp::Equal,
+            ComparisonOp::LessEqual => ComparisonOp::GreaterThan,
+            ComparisonOp::GreaterThan => ComparisonOp::LessEqual,
+            ComparisonOp::LessThan => ComparisonOp::GreaterEqual,
+            ComparisonOp::GreaterEqual => ComparisonOp::LessThan,
+        }
+    }
+
     /// Creates a `String` representation of a `ComparisonOp` for debugging purposes.
     fn to_string(&self) -> String {
         match self {
@@ -142,6 +144,10 @@ impl AtomicCondition {
             self.op.to_string(),
             self.value.to_string()
         )
+    }
+
+    pub fn negate(&mut self) {
+        self.op.negate()
     }
 
     /// Encodes an `AtomicCondition` into a (vector of) [`EncodedInstruction`]s.
@@ -175,11 +181,11 @@ impl AtomicCondition {
                 // encode each atom
                 for (i, v_i) in self.value.encode().into_iter().enumerate() {
                     result.push((
-                        false,                  // encrypt an atom
-                        (base_index + i) as u8, // encrypt the column id
-                        false,                  // encrypt the `=` operator
-                        v_i,                    // encrypt the value to the right of `=`
-                        is_negated,             // negate if self.op is `NotEqual`
+                        false,                  // encode an atom
+                        (base_index + i) as u8, // encode the column id
+                        false,                  // encode the `=` operator
+                        v_i,                    // encode the value to the right of `=`
+                        false,                  // negation is handled afterward
                     ));
                 }
 
@@ -196,7 +202,7 @@ impl AtomicCondition {
                     false,
                 ));
 
-                // result[something + i] = result[i] AND result[something + i - 1]
+                // result[i+8] = result[i] AND result[i + 7]
                 for i in 2..content_len {
                     result.push((
                         true,
@@ -206,6 +212,10 @@ impl AtomicCondition {
                         false,
                     ))
                 }
+
+                // handles negation
+                let root_and_gate = result.last_mut().unwrap();
+                root_and_gate.4 = is_negated;
             }
             _ => {
                 // every other type is encoded as one u32
@@ -261,77 +271,105 @@ impl From<(Ident, BinaryOperator, Ident)> for AtomicCondition {
 impl WhereSyntaxTree {
     /// Stringifies a `WhereSyntaxTree` for debugging purposes.
     #[allow(dead_code)]
-    fn to_string_lines(&self) -> Vec<String> {
+    fn to_string_lines(&self, base_index: u8) -> Vec<String> {
         let indent_closure =
             |v: Vec<String>| v.iter().map(|s| format!("  {s}")).collect::<Vec<String>>();
         let binary_op_closure = |op: &str, a: &Box<WhereSyntaxTree>, b: &Box<WhereSyntaxTree>| {
-            let mut result = vec![format!("({}) {op}", self.index)];
-            let mut left: Vec<String> = indent_closure(a.to_string_lines());
-            let mut right: Vec<String> = indent_closure(b.to_string_lines());
+            let b_base_index = a.index(base_index) + 1;
+            let mut result = vec![format!("({}) {op}", self.index(base_index))];
+            let mut left: Vec<String> = indent_closure(a.to_string_lines(base_index));
+            let mut right: Vec<String> = indent_closure(b.to_string_lines(b_base_index));
             result.append(&mut left);
             result.append(&mut right);
             result
         };
-        match &self.node {
-            Node::Atom(a) => vec![format!("({}) {}", self.index, a.to_string())],
-            Node::And(a, b) => binary_op_closure("And", a, b),
-            Node::Or(a, b) => binary_op_closure("Or", a, b),
-            Node::Not(a) => {
-                let mut result = a.to_string_lines();
-                result[0] = format!("({}) Not {}", self.index, &result[0]);
-                result
+        match &self {
+            WhereSyntaxTree::Atom(a) => {
+                vec![format!("({}) {}", self.index(base_index), a.to_string())]
             }
+            WhereSyntaxTree::And(a, b) => binary_op_closure("And", a, b),
+            WhereSyntaxTree::Or(a, b) => binary_op_closure("Or", a, b),
+            WhereSyntaxTree::Nand(a, b) => binary_op_closure("Not And", a, b),
+            WhereSyntaxTree::Nor(a, b) => binary_op_closure("Not Or", a, b),
         }
     }
 
     /// Stringifies a `WhereSyntaxTree` for debugging purposes.
     #[allow(dead_code)]
     pub fn to_string(&self) -> String {
-        self.to_string_lines().join("\n")
+        self.to_string_lines(0).join("\n")
+    }
+
+    /// Negates a `WhereSyntaxTree`.
+    pub fn negate(&self) -> Self {
+        match &self {
+            WhereSyntaxTree::Atom(a) => {
+                let mut negated_a = a.clone();
+                negated_a.negate();
+                WhereSyntaxTree::Atom(negated_a)
+            }
+            WhereSyntaxTree::And(a, b) => WhereSyntaxTree::Nand(a.clone(), b.clone()),
+            WhereSyntaxTree::Nand(a, b) => WhereSyntaxTree::And(a.clone(), b.clone()),
+            WhereSyntaxTree::Or(a, b) => WhereSyntaxTree::Nor(a.clone(), b.clone()),
+            WhereSyntaxTree::Nor(a, b) => WhereSyntaxTree::Or(a.clone(), b.clone()),
+        }
+    }
+
+    /// Returns the current node index when listing the tree nodes in reverse Polish order.
+    pub fn index(&self, base_index: u8) -> u8 {
+        match &self {
+            WhereSyntaxTree::Atom(a) => match a.cell_type() {
+                // 8 values plus 7 AND gates
+                CellType::ShortString => base_index + 14,
+                _ => base_index,
+            },
+            WhereSyntaxTree::And(a, b)
+            | WhereSyntaxTree::Nand(a, b)
+            | WhereSyntaxTree::Or(a, b)
+            | WhereSyntaxTree::Nor(a, b) => b.index(a.index(base_index) + 1) + 1,
+        }
     }
 
     /// Encodes a `WhereSyntaxTree` as a vector of `EncodedInstruction`s.
-    pub fn encode(&self, headers: &TableHeaders, negate: bool) -> Vec<EncodedInstruction> {
-        match &self.node {
-            Node::Atom(a) => a.encode(headers, self.index, negate),
-            Node::And(a, b) => {
-                let mut result = a.encode(headers, false);
-                result.append(&mut b.encode(headers, false));
+    pub fn encode_with_index(
+        &self,
+        headers: &TableHeaders,
+        base_index: u8,
+    ) -> Vec<EncodedInstruction> {
+        match &self {
+            WhereSyntaxTree::Atom(a) => a.encode(headers, base_index, false),
+            WhereSyntaxTree::And(a, b)
+            | WhereSyntaxTree::Nand(a, b)
+            | WhereSyntaxTree::Or(a, b)
+            | WhereSyntaxTree::Nor(a, b) => {
+                let (which_op, negate) = match &self {
+                    WhereSyntaxTree::And(_, _) => (true, false),
+                    WhereSyntaxTree::Nand(_, _) => (true, true),
+                    WhereSyntaxTree::Or(_, _) => (false, false),
+                    WhereSyntaxTree::Nor(_, _) => (false, true),
+                    WhereSyntaxTree::Atom(_) => unreachable!(),
+                };
+                let mut result = a.encode_with_index(headers, base_index);
+                let a_index = a.index(base_index);
+                let b_index = b.index(a_index + 1);
+                result.append(&mut b.encode_with_index(headers, a_index + 1));
                 result.push((
                     true,           // encode operator
-                    a.index,        // encode left index
-                    true,           // encode AND
-                    b.index as u32, // encode right index
-                    negate,         // encode negate
+                    a_index,        // encode left index
+                    which_op,       // encode op
+                    b_index as u32, // encode right index
+                    negate,         // encode op
                 ));
                 result
             }
-            Node::Or(a, b) => {
-                let mut result = a.encode(headers, false);
-                result.append(&mut b.encode(headers, false));
-                result.push((
-                    true,           // encode operator
-                    a.index,        // encode left index
-                    false,          // encode OR
-                    b.index as u32, // encode right index
-                    negate,         // encode negate
-                ));
-                result
-            }
-            Node::Not(node) => node.encode(headers, !negate),
         }
     }
 
     /// Encrypts a `WhereSyntaxTree`.
     ///
     /// First encodes itself, then encrypt each element of the resulting vector.
-    pub fn encrypt(
-        &self,
-        client_key: &ClientKey,
-        headers: &TableHeaders,
-        negate: bool,
-    ) -> EncryptedSyntaxTree {
-        self.encode(headers, negate)
+    pub fn encrypt(&self, client_key: &ClientKey, headers: &TableHeaders) -> EncryptedSyntaxTree {
+        self.encode_with_index(headers, 0)
             .into_iter()
             .map(|(is_op, left, which_op, right, negate)| {
                 (
@@ -359,15 +397,7 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
             Expr::UnaryOp {
                 op: UnaryOperator::Not,
                 expr: e,
-            } => {
-                let child = Self::from((base_index, e.as_ref().to_owned()));
-                let index = child.index; // Not gates are simplified during encryption
-                Self {
-                    index,
-                    next_index: child.next_index,
-                    node: Node::Not(Box::new(child)),
-                }
-            }
+            } => Self::from((base_index, e.as_ref().to_owned())).negate(),
             Expr::UnaryOp { op, .. } => panic!("unknown unary operator {op:?}"),
             Expr::BinaryOp {
                 ref left,
@@ -377,42 +407,23 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                 // builds an Atom from a SQL expression `column OP value`
                 (Expr::Identifier(i_left), Expr::Value(v_right)) => {
                     let atom = AtomicCondition::from((i_left, op.to_owned(), v_right));
-                    let next_index = base_index + atom.cell_type().len() as u8;
-                    Self {
-                        index: base_index,
-                        next_index,
-                        node: Node::Atom(atom),
-                    }
+                    Self::Atom(atom)
                 }
                 (Expr::Identifier(i_left), Expr::Identifier(i_right))
                     if op == &BinaryOperator::Eq || op == &BinaryOperator::NotEq =>
                 {
                     let atom = AtomicCondition::from((i_left, op.to_owned(), i_right));
-                    let next_index = base_index + atom.cell_type().len() as u8;
-                    Self {
-                        index: base_index,
-                        next_index,
-                        node: Node::Atom(atom),
-                    }
+                    Self::Atom(atom)
                 }
                 // recursively builds a syntax tree from a SQL expression `l OP r`
                 // where OP is one of AND, OR
                 // and l, r are SQL expressions
                 (l, r) => {
                     let left = Self::from((base_index, l.clone()));
-                    let right = Self::from((left.next_index, r.clone()));
-                    let index = right.next_index;
+                    let right = Self::from((left.index(base_index) + 1, r.clone()));
                     match op {
-                        BinaryOperator::And => Self {
-                            index,
-                            next_index: index + 1,
-                            node: Node::And(Box::new(left), Box::new(right)),
-                        },
-                        BinaryOperator::Or => Self {
-                            index,
-                            next_index: index + 1,
-                            node: Node::Or(Box::new(left), Box::new(right)),
-                        },
+                        BinaryOperator::And => Self::And(Box::new(left), Box::new(right)),
+                        BinaryOperator::Or => Self::Or(Box::new(left), Box::new(right)),
                         _ => panic!("unknown expression: {l} {op} {r}"),
                     }
                 }
