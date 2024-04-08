@@ -1,3 +1,4 @@
+//! Types and methods for working with encrypted values.
 use tfhe::core_crypto::algorithms::{
     lwe_ciphertext_add_assign, lwe_linear_algebra::lwe_ciphertext_plaintext_add_assign,
 };
@@ -52,10 +53,10 @@ impl<'a> EntryLUT<'a> {
         };
         // the input argument to f will be an u8, the output will be an u32,
         // so we decompose one u32 as four u8
-        let f0 = |u: u64| -> u64 { f(u) % 255 }; // lsb
-        let f1 = |u: u64| -> u64 { (f(u) >> 8) % 255 };
-        let f2 = |u: u64| -> u64 { (f(u) >> 16) % 255 };
-        let f3 = |u: u64| -> u64 { (f(u) >> 24) % 255 }; //msb
+        let f0 = |u: u64| -> u64 { f(u) % 256 }; // lsb
+        let f1 = |u: u64| -> u64 { (f(u) >> 8) % 256 };
+        let f2 = |u: u64| -> u64 { (f(u) >> 16) % 256 };
+        let f3 = |u: u64| -> u64 { (f(u) >> 24) % 256 }; //msb
         let lut = (
             wopbs_key.generate_lut_radix(&max_argument, f0),
             wopbs_key.generate_lut_radix(&max_argument, f1),

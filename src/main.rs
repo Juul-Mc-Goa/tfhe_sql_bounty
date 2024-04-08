@@ -287,6 +287,7 @@ fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey, WopbsParameters) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (client_key, server_key, wopbs_key, wopbs_params) = generate_keys();
 
+    // query::tests::encode_short_string();
     let query_path = PathBuf::from("query.txt");
     let query = build_where_syntax_tree(parse_query(query_path));
 
@@ -299,6 +300,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let headers = table.headers.clone();
 
     let encrypted_query = query.encrypt(client_key.as_ref(), &headers);
+
+    println!("\nencoded query:");
+    query
+        .encode(&headers)
+        .iter()
+        .for_each(|instr| println!("{instr:?}"));
+
     let query_runner = TableQueryRunner::new(
         table,
         client_key.as_ref(),
@@ -306,6 +314,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &wopbs_key,
         wopbs_params,
     );
+
+    println!("\nencoded table:");
+    query_runner
+        .content
+        .iter()
+        .for_each(|entry| println!("{entry:?}"));
 
     let ct_result = query_runner.run_fhe_query(&encrypted_query);
     let clear_result = ct_result
