@@ -12,6 +12,14 @@
 //! `cmux_tree_memory_optimized` from `core_crypto`, but with a different number
 //! of layers, and another which implements its own `cmux_tree_recursive`
 //! fonction. The corresponding modules are `regular_cmux_tree` and `recursive_cmux_tree`.
+//!
+//! Here is the list of modified `core_crypto` functions:
+//! - `circuit_bootstrap_boolean_vertical_packing`
+//! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized`
+//! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement`
+//! - `vertical_packing`
+//! - `vertical_packing_scratch`
+//! - `cmux_tree_memory_optimized`
 
 use rayon::prelude::*;
 

@@ -1,1 +1,1 @@
-SELECT * FROM table_1 WHERE some_str="first line"
+SELECT * FROM table_1 WHERE (some_bool = true OR some_int = 3)

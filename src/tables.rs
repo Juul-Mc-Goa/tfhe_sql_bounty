@@ -175,7 +175,6 @@ pub struct Table {
 /// Each entry is stored as a `Vec<u32>`. A table is a vector of entries.
 // #[derive(Debug)]
 pub struct TableQueryRunner<'a> {
-    pub headers: TableHeaders,
     pub content: Vec<Vec<u32>>,
     pub client_key: &'a ClientKey,
     pub server_key: &'a ServerKey,
@@ -192,7 +191,6 @@ impl<'a> TableQueryRunner<'a> {
         wopbs_parameters: WopbsParameters,
     ) -> Self {
         Self {
-            headers: table.headers.clone(),
             content: table
                 .content
                 .iter()
@@ -207,8 +205,13 @@ impl<'a> TableQueryRunner<'a> {
 
     /// Runs an encrypted query on a given entry.
     ///
-    /// Returns a Ciphertext encrypting a boolean that answers the question: "Is this entry
-    /// selected by the query?"
+    /// # Inputs
+    /// - `entry: &Vec<u32` an encoded entry,
+    /// - `query: &EncryptedSyntaxTree` an encrypted `SELECT` query,
+    /// - `query_lut: &mut QueryLUT` an updatable, hidden lookup table.
+    /// # Output
+    /// A `Ciphertext` encrypting a boolean that answers the question: "Is this
+    /// entry selected by the query?"
     ///
     /// The encrypted boolean is actually an integer modulo 2, so that:
     /// - `a AND b` becomes `a*b`,
@@ -218,6 +221,9 @@ impl<'a> TableQueryRunner<'a> {
     ///
     /// Then the boolean formulas are simplified so as to minimize the number of
     /// multiplications, using the fact that addition is much faster than PBS.
+    /// We also use that:
+    ///
+    /// $(a \leq b) \text{ XOR } (a = b) \iff a \lt b$.
     fn run_query_on_entry(
         &self,
         entry: &Vec<u32>,
@@ -245,8 +251,8 @@ impl<'a> TableQueryRunner<'a> {
             return result_bool.ct;
         }
 
-        let decrypt_bool = |ct: &FheBool| self.client_key.decrypt_one_block(&ct.ct);
-        let decrypt_radix = |ct: &RadixCiphertext| self.client_key.decrypt_radix::<u64>(ct);
+        // let decrypt_bool = |ct: &FheBool| self.client_key.decrypt_one_block(&ct.ct);
+        // let decrypt_radix = |ct: &RadixCiphertext| self.client_key.decrypt_radix::<u64>(ct);
 
         // else, loop through all atoms
         for (index, (is_op, left, which_op, right, negate)) in query.iter().enumerate() {
@@ -265,12 +271,6 @@ impl<'a> TableQueryRunner<'a> {
             let is_eq = is_eq(&val_left, val_right);
             let atom_left = new_fhe_bool(query_lut.apply(left));
             let atom_right = new_fhe_bool(query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4)));
-
-            println!("val_left: {}", decrypt_radix(&val_left));
-            println!("val_right: {}", decrypt_radix(&val_right));
-            println!("is_eq: {}", decrypt_bool(&is_eq));
-            println!("atom_left: {}", decrypt_bool(&atom_left));
-            println!("atom_right: {}", decrypt_bool(&atom_right));
 
             // result_bool:
             //   | if is_op: op_bool XOR negate
@@ -305,19 +305,14 @@ impl<'a> TableQueryRunner<'a> {
             //               negate
 
             let summand_1_and = &atom_left * &atom_right;
-            let summand_1_or = !&which_op * (&atom_left + &atom_right);
+            let summand_1_or = &which_op * &(&atom_left + &atom_right);
             let summand_1 = &is_op * &(&summand_1_and + &summand_1_or);
             let summand_0 = !is_op * (is_eq + which_op * is_lt);
             result_bool = &summand_1 + &summand_0 + negate;
 
-            println!("atom_left AND atom_right: {}", decrypt_bool(&summand_1_and));
-            println!("result_bool: {}", decrypt_bool(&result_bool));
-
             // enforce that result_bool encrypts either 0 or 1
             // result_bool = new_fhe_bool(result_bool.into_boolean_block().into_inner());
 
-            // update query lookup table
-            println!("udpating at index {index}");
             query_lut.update(index as u8, result_bool.ct.clone());
         }
         result_bool.ct

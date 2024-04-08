@@ -1,16 +1,34 @@
 //! Computes encrypted queries homomorphically.
 //!
+//! # Main logic
+//! A provided query is parsed and converted to a structure named `WhereSyntaxTree`.
+//! This structure is then encoded into a vector `Vec<EncodedInstruction>`, before
+//! being encrypted.
+//!
+//! A provided database is handled as a structure `Tables`. It is then used to
+//! build a `TableQueryRunner`, which provides the `run_fhe_query` method. This
+//! method uses several structures defined in the module `cipher_structs`.
+//!
+//! As much of this project's logic is dictated by how a query is encrypted and
+//! how computations over booleans are handled, both are described here. See
+//! the paragraphs:
+//! + [Query encoding and encryption](#query-encoding-and-encryption), and
+//! + [Replacing boolean operators with addition and multiplication mod 2](#replacing-boolean-operators-with-addition-and-multiplication-mod-2),
+//!
+//! respectively.
+//!
 //! # Structure of the project
 //! This project is divided in the following modules:
-//! ### `query.rs`
+//!
+//! ### [`query`]
 //! Handles converting a `sqlparser::ast::Select` into an internal
 //! representation of the syntax tree, as well as encoding it into a vector of
 //! tuples `(bool, u8, bool u32, bool)`, and encrypting the result.
 //!
-//! ### `tables.rs`
+//! ### [`tables`]
 //! Handles the representation of tables, entries, and cells. Also provides a
-//! `TableQueryRunner` type for performing the FHE computations. Tables are stored as a
-//! struct with two fields:
+//! [`TableQueryRunner`](`tables::TableQueryRunner`) type for performing the FHE
+//! computations. Tables are stored as a struct with two fields:
 //! 1. `headers: Vec<CellType>`,
 //! 2. `content: Vec<Vec<CellContent>>`.
 //!
@@ -18,17 +36,17 @@
 //! in a cell.  The type `CellContent` is an enum with a variant for each type,
 //! and a field holding the content.
 //!
-//! ### `cipher_structs.rs`
+//! ### [`cipher_structs`]
 //! Contains the definition of a few structures handling encrypted data.
 //! Here are the structures defined there:
 //!
-//! #### `EntryLUT`
+//! #### [`EntryLUT`](cipher_structs::EntryLUT)
 //! A lookup table for handling FHE computations of functions `u8 -> u32`,
 //!
-//! #### `FheBool`
+//! #### [`FheBool`](cipher_structs::FheBool)
 //! A wrapper for `Ciphertext` which implements the `Add, Mul, Not` traits,
 //!
-//! #### `QueryLUT`
+//! #### [`QueryLUT`](cipher_structs::QueryLUT)
 //! A lookup table for handling FHE computations of functions `u8 -> FheBool`.
 //! This requires rewriting quite a few methods from `tfhe::integer::WopbsKey`
 //! and `tfhe::core_crypto` modules, and so has its own `hidden_function_lut`
@@ -53,7 +71,7 @@
 //!
 //! ## Node encoding
 //! A node is a boolean operator of arity two, where:
-//! - `which_op` encodes the choice between `AND` (`true`) and `OR` (`false`),
+//! - `which_op` encodes the choice between `OR` (`true`) and `AND` (`false`),
 //! - `negate` encodes negation of the resulting boolean, ie the choice between
 //!   `AND` and `NAND`, or `OR` and `NOR`,
 //! - its two arguments are encoded as two indices `i1` and `i2`, which refer to
@@ -61,14 +79,14 @@
 //!
 //! For example:
 //! ```rust
-//! let encoded_tree = vec![
+//! let encoded_query = vec![
 //!   todo!(), // encoding of first atom
 //!   todo!(), // encoding of second atom
-//!   (true, 0, true, 1, false), // encoding of "encoded_tree[0] AND encoded_tree[1]"
+//!   (true, 0, true, 1, false), // encoding of "encoded_query[0] OR encoded_query[1]"
 //! ];
 //! ```
-//! Here the last element of `encoded_tree` refers to two atoms at index `0` and
-//! `1` in `encoded_tree`.
+//! Here the last element of `encoded_query` refers to two atoms at index `0` and
+//! `1` in `encoded_query`.
 //!
 //! All in all, an `EncodedInstruction` of the form:
 //! ```rust
@@ -76,8 +94,9 @@
 //! ```
 //! encodes the following instruction:
 //! ```
-//! (encoded_tree[i1] which_op encoded_tree[i2]) XOR negate
+//! (encoded_query[i1] OP encoded_query[i2]) XOR negate
 //! ```
+//! where `OP` is either `AND` or `OR` depending on `which_op`.
 //!
 //! ## Atom encoding
 //! An atom is an expression of the form `column_id op value` where:
@@ -112,6 +131,12 @@
 //!      ">=" => (true,  true,  value - 1),
 //! }
 //! ```
+//! <div class="warning">
+//!
+//! Modifying the `value` fails in one edge case: when processing the atom `column_id < 0`
+//! where `column_id` is an unsigned integer.
+//!
+//! </div>
 //!
 //! ### Encoding `value`
 //! Every value in an encoded instruction is of type `u32`. Casting unsigned integers
@@ -136,16 +161,21 @@
 //! ```rust
 //! (Ciphertext, RadixCiphertext, Ciphertext, RadixCiphertext, Ciphertext)
 //! ```
+//! The first `RadixCiphertext` has 4 blocks, while the second has 16 of them.
 //!
 //! # Hidden lookup tables
 //! When performing a SQL query homomorphically, we run the encrypted query on
-//! each entry. Let `n` be the length of the encoded query. The
-//! `run_fhe_query_on_entry` function first creates a vector `query_lut:
-//! Vec<Ciphertext>`, of size `n`, then write the (encrypted) result of each
-//! instruction into it. As an instruction can refer to other instructions in
-//! the encoded query, we need to homomorphically evaluate a function `u8 ->
-//! Ciphertext`, also called a "hidden lookup table".  This is done in the
-//! submodule `cipher_structs::hidden_function_lut`.
+//! each entry.
+//!
+//! Let `n` be the length of the encoded query. The
+//! `TableQueryRunner::run_fhe_query_on_entry` method first creates a vector
+//! `query_lut: Vec<Ciphertext>`, of size `n`, then write the (encrypted) result
+//! of each instruction into it.
+//!
+//! As an instruction can refer to other
+//! instructions in the encoded query, we need to homomorphically evaluate a
+//! function `u8 -> Ciphertext`, also called a "hidden lookup table".  This is
+//! done in the submodule `cipher_structs::hidden_function_lut`.
 //!
 //! # Replacing boolean operators with addition and multiplication mod 2
 //! We note the following:
@@ -172,17 +202,21 @@
 //! This thus encodes a node. Let `left, right` be the two booleans that `i_l, i_r` refer to.
 //! The result boolean is then:
 //! ```
-//! (which_op AND (left AND right)) XOR ((NOT which_op) AND (left OR right)) XOR negate
+//! (which_op AND (left OR right)) XOR
+//! ((NOT which_op) AND (left AND right)) XOR
+//! negate
 //! ```
 //! Which requires 7 PBS. When written using `+, *`, we obtain:
 //! ```rust
-//! which_op * (left * right) + ((1 + which_op) * (left + right + left * right)) + negate
+//! which_op * (left + right + left * right) +
+//! (1 + which_op) * (left * right) +
+//! negate
 //! ```
 //! which simplifies to:
 //! ```rust
-//! left * right + (1 + which_op) * (left + right) + negate
+//! left * right + which_op * (left + right) + negate
 //! ```
-//! This requires two multiplications (thus 2 PBS), plus 4 additions.
+//! This requires two multiplications (thus 2 PBS), plus 3 additions.
 //!
 
 use std::path::PathBuf;
