@@ -375,6 +375,7 @@ name = "tfhe_sql_query"
 version = "0.1.0"
 dependencies = [
  "aligned-vec",
+ "concrete-csprng",
  "concrete-fft",
  "csv",
  "dyn-stack",

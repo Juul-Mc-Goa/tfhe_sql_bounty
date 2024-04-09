@@ -409,7 +409,8 @@ pub fn load_tables(
     })
 }
 
+#[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::generate_keys;
+    // use super::*;
+    // use crate::generate_keys;
 }

@@ -468,9 +468,11 @@ pub fn build_where_syntax_tree(statement: Statement) -> WhereSyntaxTree {
     }
 }
 
+#[cfg(test)]
 pub mod tests {
     use super::*;
 
+    #[test]
     fn print_query() {
         let query_path = PathBuf::from("query.txt");
         let query = build_where_syntax_tree(parse_query(query_path));
@@ -478,6 +480,7 @@ pub mod tests {
         println!("query: \n{}\n", query.to_string());
     }
 
+    #[test]
     pub fn encode_short_string() {
         let dialect = GenericDialect {};
         let str_query = "SELECT * from table_1 WHERE some_str=\"first_line\"";
