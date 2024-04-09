@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 # tfhe and some of its dependencies
 aligned-vec = { version = "0.5" }
+concrete-csprng = { version = "0.4.0" }
 concrete-fft = { version = "0.4.0" }
 dyn-stack = { version = "0.9" }
 rayon = { version = "1.5.0" }

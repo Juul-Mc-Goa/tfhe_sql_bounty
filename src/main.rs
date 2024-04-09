@@ -13,7 +13,7 @@
 //! how computations over booleans are handled, both are described here. See
 //! the paragraphs:
 //! + [Query encoding and encryption](#query-encoding-and-encryption), and
-//! + [Replacing boolean operators with addition and multiplication mod 2](#replacing-boolean-operators-with-addition-and-multiplication-mod-2),
+//! + [Evaluating an encrypted syntax tree](#evaluating-an-encrypted-syntax-tree),
 //!
 //! respectively.
 //!
@@ -157,27 +157,34 @@
 //! ```
 //!
 //! ## Encrypting an `EncodedInstruction`
-//! Just encrypt each element of the tuple. The output type is then:
+//! We just encrypt each element of the tuple. The output type is then:
 //! ```rust
 //! (Ciphertext, RadixCiphertext, Ciphertext, RadixCiphertext, Ciphertext)
 //! ```
 //! The first `RadixCiphertext` has 4 blocks, while the second has 16 of them.
 //!
-//! # Hidden lookup tables
+//! # Evaluating an encrypted syntax tree
+//! ## Hidden lookup tables
 //! When performing a SQL query homomorphically, we run the encrypted query on
 //! each entry.
 //!
 //! Let `n` be the length of the encoded query. The
-//! `TableQueryRunner::run_fhe_query_on_entry` method first creates a vector
-//! `query_lut: Vec<Ciphertext>`, of size `n`, then write the (encrypted) result
-//! of each instruction into it.
+//! [`TableQueryRunner::run_query_on_entry`](tables::TableQueryRunner::run_query_on_entry)
+//! method first creates a vector `query_lut: Vec<Ciphertext>`, of size `n`,
+//! then write the (encrypted) result of each instruction into it.
+//! <div class="warning">
+//!
+//! Strictly speaking, `query_lut` is of type `QueryLUT`, and is kept throughout
+//! entries (it is flushed at the end of each iteration).
+//!
+//! </div>
 //!
 //! As an instruction can refer to other
 //! instructions in the encoded query, we need to homomorphically evaluate a
 //! function `u8 -> Ciphertext`, also called a "hidden lookup table".  This is
-//! done in the submodule `cipher_structs::hidden_function_lut`.
+//! done in the [`hidden_function_lut`](cipher_structs::hidden_function_lut) module.
 //!
-//! # Replacing boolean operators with addition and multiplication mod 2
+//! ## Replacing boolean operators with addition and multiplication mod 2
 //! We note the following:
 //! 1. Addition of ciphertexts is much faster than doing a PBS,
 //! 2. Let $a,b \in \mathbb{Z}/2\mathbb{Z}$. Then:
@@ -220,6 +227,7 @@
 //!
 
 use std::path::PathBuf;
+use std::time::Instant;
 use tfhe::integer::gen_keys_radix;
 use tfhe::integer::{wopbs::WopbsKey, RadixClientKey, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
@@ -251,6 +259,7 @@ use tables::*;
 /// the clear DB system you use for comparison
 // fn decrypt_result(clientk_key: &ClientKey, result: &EncryptedResult) -> String;
 
+#[allow(dead_code)]
 fn decode_entry(headers: TableHeaders, entry: Vec<u32>) -> Vec<CellContent> {
     let decode_i32 = |i: u32| {
         if i < (1 << 31) {
@@ -283,6 +292,7 @@ fn decode_entry(headers: TableHeaders, entry: Vec<u32>) -> Vec<CellContent> {
     result
 }
 
+#[allow(dead_code)]
 fn decode_u32_string(v: Vec<u32>) -> String {
     let mut vec_u8 = Vec::<u8>::new();
     for u in v {
@@ -321,7 +331,6 @@ fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey, WopbsParameters) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (client_key, server_key, wopbs_key, wopbs_params) = generate_keys();
 
-    // query::tests::encode_short_string();
     let query_path = PathBuf::from("query.txt");
     let query = build_where_syntax_tree(parse_query(query_path));
 
@@ -333,13 +342,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_, table) = tables.tables[0].clone();
     let headers = table.headers.clone();
 
+    let timer = Instant::now();
     let encrypted_query = query.encrypt(client_key.as_ref(), &headers);
-
-    println!("\nencoded query:");
-    query
-        .encode(&headers)
-        .iter()
-        .for_each(|instr| println!("{instr:?}"));
 
     let query_runner = TableQueryRunner::new(
         table,
@@ -349,97 +353,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         wopbs_params,
     );
 
-    println!("\nencoded table:");
-    query_runner
-        .content
-        .iter()
-        .for_each(|entry| println!("{entry:?}"));
-
     let ct_result = query_runner.run_fhe_query(&encrypted_query);
     let clear_result = ct_result
         .into_iter()
         .map(|ct_bool: Ciphertext| client_key.decrypt_one_block(&ct_bool))
         .collect::<Vec<u64>>();
 
-    println!("result: {clear_result:?}");
+    let total_time = timer.elapsed();
+
+    println!(
+        "Runtime: {}.{}s",
+        total_time.as_secs(),
+        total_time.subsec_millis() / 10
+    );
+    println!("Clear DB Result: TODO");
+    println!("Encrypted DB Result: {clear_result:?}");
+    println!("Results match: TODO");
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-<<<<<<< HEAD
-    fn keygen() -> (ClientKey, ServerKey) {
-        println!("generating FHE keys...");
-        let config = ConfigBuilder::default()
-            .enable_function_evaluation()
-            .build();
-        let keys = generate_keys(config);
-        println!("DONE");
-        keys
-    }
-
-    #[test]
-    fn run_fhe_query() {
-        // KeyGen...
-        // (insert Waifu here)
-        let (client_key, server_key) = keygen();
-
-        // Server-side
-        set_server_key(server_key);
-
-        let query_path = PathBuf::from("query.txt");
-        let query = build_where_syntax_tree(parse_query(query_path));
-        let dnf = query.disjunctive_normal_form();
-
-        let db_dir_path = "db_dir";
-        let tables = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
-        let (_, table) = tables.0[0].clone();
-        let headers = table.headers.clone();
-
-        let encrypted_query = dnf.encrypt(&client_key, &headers);
-        let encoded_table = EncodedTable::from(table);
-
-        let ct_result = encoded_table.run_fhe_query(encrypted_query);
-
-        let clear_result = ct_result
-            .into_iter()
-            .map(|ct_bool: FheBool| ct_bool.decrypt(&client_key))
-            .collect::<Vec<bool>>();
-        println!("result: {clear_result:?}");
-    }
-
-=======
->>>>>>> 293c772 (test the `update_lut` function)
-    #[test]
-    fn encrypt_u8() {
-        let (client_key, _server_key, _, _) = generate_keys();
-        let client_key = client_key.as_ref();
-        let content: u8 = 5;
-        let cell: CellContent = CellContent::U8(content);
-        println!("encrypting content: {cell:?}...");
-        let encrypted_cell = cell.encrypt(client_key);
-        println!("decrypting...");
-        let decrypted_cell: u8 = client_key.decrypt_radix(&encrypted_cell[0]);
-        assert_eq!(content, decrypted_cell);
-    }
-
-    #[test]
-    fn encrypt_short_string() {
-        let (client_key, _server_key, _, _) = generate_keys();
-        let client_key = client_key.as_ref();
-        let content: String = "test".into();
-        let cell: CellContent = CellContent::ShortString(content.clone());
-        println!("encrypting content: {cell:?}...");
-        let encrypted_cell = cell.encrypt(client_key);
-        println!("decrypting...");
-        let decrypted_cell: Vec<u32> = encrypted_cell
-            .iter()
-            .map(|c| client_key.decrypt_radix::<u32>(c))
-            .collect();
-        let string_decrypted_cell = decode_u32_string(decrypted_cell);
-        assert_eq!(content, string_decrypted_cell);
-    }
+    // use super::*;
 }

@@ -6,12 +6,14 @@
 //! Here is the list of the copy-pasted and modified functions:
 //! - `WopbsKey::wopbs()` (`integer` API)
 //! - `WopbsKey::circuit_bootstrapping_vertical_packing()` (`shortint` API)
-//! - `WopbsKey::circuit_bootstrap_with_bits() (`shortint` API)`
+//! - `WopbsKey::circuit_bootstrap_with_bits()` (`shortint` API)
 //!
-//! Two versions of `core_crypto` functions are implemented: one which uses
+//! Two versions of `core_crypto` functions are implemented:
+//! 1. [`regular_cmux_tree`](super::regular_cmux_tree): uses
 //! `cmux_tree_memory_optimized` from `core_crypto`, but with a different number
-//! of layers, and another which implements its own `cmux_tree_recursive`
-//! fonction. The corresponding modules are `regular_cmux_tree` and `recursive_cmux_tree`.
+//! of layers, and
+//! 2. [`recursive_cmux_tree`](super::recursive_cmux_tree): implements its own
+//! [`cmux_tree_recursive`] fonction.
 //!
 //! Here is the list of modified `core_crypto` functions:
 //! - `circuit_bootstrap_boolean_vertical_packing`
@@ -119,31 +121,21 @@ impl<'a> QueryLUT<'a> {
         mask.as_mut()
             .copy_from_slice(wopbs_value.ct.get_mask().as_ref());
 
-        // perform the (opposite) steps in extract_lwe_sample_from_glwe_ciphertext in reverse order
-        // in this function, the steps are:
+        // perform the (opposite) steps that are performed in
+        // extract_lwe_sample_from_glwe_ciphertext in reverse order. In this
+        // function, the steps are:
         // 1. reverse the mask
-        // 2. mutate mask[0..opposite_count] <- - mask[0..opposite_count]
+        // 2. mutate the mask: mask[0..opposite_count] <- - mask[0..opposite_count]
         // 3. rotate the result: mask.rotate_left(opposite_count)
         use tfhe::core_crypto::algorithms::slice_algorithms::slice_wrapping_opposite_assign;
-        let opposite_count = mask.as_ref().len() - 1;
+        let opposite_count = mask.as_ref().len() - 1; // we know we extract the coef of degree 0
 
-        mask.as_mut().rotate_right(opposite_count);
-        slice_wrapping_opposite_assign(&mut mask.as_mut()[0..opposite_count]);
-        mask.as_mut().reverse();
+        mask.as_mut().rotate_right(opposite_count); // opposite of 3.
+        slice_wrapping_opposite_assign(&mut mask.as_mut()[0..opposite_count]); // opposite of 2.
+        mask.as_mut().reverse(); // opposite of 1.
 
         // copy the input body into the 0th coefficient of the output body
         body.as_mut()[0] = *wopbs_value.ct.get_body().data;
-
-        // private functional packing with the last pfpksk
-        // use tfhe::core_crypto::algorithms::lwe_private_functional_packing_keyswitch::private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext;
-        // private_functional_keyswitch_lwe_ciphertext_into_glwe_ciphertext(
-        //     &self
-        //         .wopbs_key
-        //         .cbs_pfpksk
-        //         .get(self.wopbs_key.cbs_pfpksk.entity_count() - 1),
-        //     &mut lut_at_index,
-        //     &wopbs_value.ct,
-        // );
     }
 
     /// Inner function called when performing table lookup. Copy-pasted from
