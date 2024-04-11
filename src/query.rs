@@ -4,10 +4,15 @@
 //! well as methods for encoding and encrypting them.
 
 use crate::{CellContent, CellType, TableHeaders};
+
+use egg::{rewrite as rw, *};
+
 use sqlparser::ast::{BinaryOperator, Expr, Ident, SetExpr, Statement, UnaryOperator, Value};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
+
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
+
 use tfhe::integer::{ClientKey, RadixCiphertext};
 use tfhe::shortint::Ciphertext;
 
@@ -465,6 +470,115 @@ pub fn build_where_syntax_tree(statement: Statement) -> WhereSyntaxTree {
             _ => panic!("unknown query: {q:?}"),
         },
         _ => panic!("unknown statement: {statement:?}"),
+    }
+}
+
+define_language! {
+    /// defines a simple language to model queries, then uses the `egg` library
+    /// to optimize them.
+    pub enum QueryLanguage {
+        "true" = True,
+        "false" = False,
+
+        "AND" = And([Id; 2]),
+        "OR" = Or([Id; 2]),
+        "NOT" = Not(Id),
+
+        Num(u32),
+
+        "=" = Eq([Id; 2]),
+        "<=" = Leq([Id; 2]),
+        "<" = Lt([Id; 2]),
+
+        "min" = Min([Id; 2]),
+        "max" = Max([Id; 2]),
+
+        Symbol(Symbol),
+    }
+}
+
+/// Returns a vector containing all the rewrite rules for `QueryLanguage`.
+pub fn rules() -> Vec<Rewrite> {
+    vec![
+        rw!("not-true"; "(NOT true)" => "false"),
+        rw!("double-negation"; "(NOT (NOT ?x))" => "?x"),
+        // and rules
+        rw!("and-excluded-mid"; "(AND ?x (NOT ?x))" => "false"),
+        rw!("and-true"; "(AND ?x true)" => "?x"),
+        rw!("and-false"; "(AND ?x false)" => "false"),
+        rw!("associate-and"; "(AND ?x (AND ?y ?z))" => "(AND (AND ?x ?y) ?z)"),
+        rw!("commute-and"; "(AND ?x ?y)" => "(AND ?y ?x)"),
+        rw!("idempotent-and"; "(AND ?x ?x)" => "?x"),
+        // or rules
+        rw!("or-excluded-mid"; "(OR ?x (NOT ?x))" => "true"),
+        rw!("or-true"; "(OR ?x true)" => "true"),
+        rw!("or-false"; "(OR ?x false)" => "?x"),
+        rw!("associate-or"; "(OR ?x (OR ?y ?z))" => "(OR (OR ?x ?y) ?z)"),
+        rw!("commute-or"; "(OR ?x ?y)" => "(OR ?y ?x)"),
+        rw!("idempotent-or"; "(OR ?x ?x)" => "?x"),
+        // and-or-not rules
+        rw!("distribute-or"; "(AND ?x (OR ?y ?z))" => "(OR (AND ?x ?y) (AND ?x ?z))"),
+        rw!("distribute-and"; "(OR ?x (AND ?y ?z))" => "(AND (OR ?x ?y) (OR ?x ?z))"),
+        rw!("de-morgan"; "(NOT (AND ?x ?y))" => "(OR (NOT ?x) (NOT ?y))"),
+        // atom rules
+        rw!("neq-lt-or-gt"; "(NOT (= ?x ?y))" => "(OR (< ?x ?y) (NOT (<= ?x ?y)))"),
+        rw!("leq-and"; "(AND (<= ?x ?y) (<= ?x ?z))" => "(<= x (min ?y ?z))"),
+        rw!("leq-or"; "(OR (<= ?x ?y) (<= ?x ?z))" => "(<= x (max ?y ?z))"),
+    ]
+}
+
+pub type EGraph = egg::EGraph<QueryLanguage, ConstantFold>;
+pub type Rewrite = egg::Rewrite<QueryLanguage, ConstantFold>;
+
+/// Defines how to handle constants when simplifying queries.
+#[derive(Default)]
+pub struct ConstantFold;
+impl Analysis<QueryLanguage> for ConstantFold {
+    type Data = Option<(u32, PatternAst<QueryLanguage>)>;
+
+    fn make(egraph: &EGraph, enode: &QueryLanguage) -> Self::Data {
+        let x = |i: &Id| egraph[*i].data.as_ref().map(|d| d.0);
+        Some(match enode {
+            QueryLanguage::Num(c) => (*c, format!("{}", c).parse().unwrap()),
+            QueryLanguage::Max([a, b]) => (
+                x(a)?.max(x(b)?),
+                format!("(max {} {})", x(a)?, x(b)?).parse().unwrap(),
+            ),
+            QueryLanguage::Min([a, b]) => (
+                x(a)?.min(x(b)?),
+                format!("(min {} {})", x(a)?, x(b)?).parse().unwrap(),
+            ),
+            _ => return None,
+        })
+    }
+
+    fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
+        merge_option(to, from, |a, b| {
+            assert_eq!(a.0, b.0, "Merged non-equal constants");
+            DidMerge(false, false)
+        })
+    }
+
+    fn modify(egraph: &mut EGraph, id: Id) {
+        let data = egraph[id].data.clone();
+        if let Some((c, pat)) = data {
+            if egraph.are_explanations_enabled() {
+                egraph.union_instantiations(
+                    &pat,
+                    &format!("{}", c).parse().unwrap(),
+                    &Default::default(),
+                    "constant_fold".to_string(),
+                );
+            } else {
+                let added = egraph.add(QueryLanguage::Num(c));
+                egraph.union(id, added);
+            }
+            // to not prune, comment this out
+            egraph[id].nodes.retain(|n| n.is_leaf());
+
+            #[cfg(debug_assertions)]
+            egraph[id].assert_unique_leaves();
+        }
     }
 }
 

@@ -11,8 +11,9 @@ concrete-fft = { version = "0.4.0" }
 dyn-stack = { version = "0.9" }
 rayon = { version = "1.5.0" }
 tfhe = { version = "*", features = ["boolean", "integer", "shortint", "x86_64-unix"] }
-# csv reader, sqlparser, etc
+# csv reader, sqlparser, e-graphs good
 csv =  { version = "*" }
+egg = { version = "0.9.5" }
 serde =  { version = "*" }
 sqlparser=  { version = "*" }
 
