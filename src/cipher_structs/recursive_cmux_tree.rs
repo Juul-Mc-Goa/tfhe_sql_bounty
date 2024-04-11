@@ -296,7 +296,9 @@ pub fn vertical_packing(
 
 /// homomorphic computation of a hidden lookup table.
 ///
-/// Argument `ggsw_list` is meant to be a list of encrypted booleans.
+/// Argument `ggsw_list` is meant to be a list of encrypted booleans. Performs a
+/// blind rotation by some encrypted value `ct` by just computing cmuxes with
+/// the binary decomposition of `ct`.
 ///
 /// Uses the following fact:
 /// 1. if `lut` is a list of size $2^n$,
@@ -313,7 +315,7 @@ pub fn vertical_packing(
 /// - `lut1 = lut[split_index..]`
 /// - `split_index` is equal to $2^{n-1}$.
 ///
-/// Thus no blind rotation is performed.
+/// Thus no call to the primitive `blind_rotate_assign` is done.
 pub fn cmux_tree_recursive(
     mut output_glwe: GlweCiphertext<&mut [u64]>,
     lut: GlweCiphertextList<&[u64]>,

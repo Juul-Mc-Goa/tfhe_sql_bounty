@@ -255,11 +255,11 @@ impl<'a> TableQueryRunner<'a> {
         // let decrypt_radix = |ct: &RadixCiphertext| self.client_key.decrypt_radix::<u64>(ct);
 
         // else, loop through all atoms
-        for (index, (is_op, left, which_op, right, negate)) in query.iter().enumerate() {
+        for (index, (is_node, left, which_op, right, negate)) in query.iter().enumerate() {
             println!("atom n°{index}...");
 
-            let (is_op, which_op, negate) = (
-                new_fhe_bool(is_op.clone()),
+            let (is_node, which_op, negate) = (
+                new_fhe_bool(is_node.clone()),
                 new_fhe_bool(which_op.clone()),
                 new_fhe_bool(negate.clone()),
             );
@@ -273,42 +273,56 @@ impl<'a> TableQueryRunner<'a> {
             let atom_right = new_fhe_bool(query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4)));
 
             // result_bool:
-            //   | if is_op: op_bool XOR negate
+            //   | if is_node: op_bool XOR negate
             //   | else:   atom_bool XOR negate
             // op_bool:
-            //   | if which_bool: atom_left AND atom_right
-            //   | else:          atom_left OR atom_right
+            //   | if which_bool: atom_left OR atom_right
+            //   | else:          atom_left AND atom_right
             // atom_bool:
             //   | if which_bool: val_left <= val_right
             //   | else:          val_left == val_right
+            //
             // so we get:
-            // result_bool = (is_op AND
-            //                  (which_op AND atom_left AND atom_right) XOR
-            //                  (!which_op AND (atom_left OR atom_right))) XOR
-            //               (!is_op AND
+            // result_bool = (is_node AND
+            //                  (which_op AND (atom_left OR atom_right)) XOR
+            //                  (!which_op AND atom_left AND atom_right)) XOR
+            //               (!is_node AND
             //                 ((which_op AND (is_eq XOR is_lt)) XOR (!which_op AND is_eq))) XOR
             //               negate
-            //             = (is_op AND
-            //                  (which_op AND atom_left AND atom_right) XOR
-            //                  (!which_op AND (atom_left OR atom_right))) XOR
-            //               (!is_op AND (is_eq XOR (which_op AND is_lt))) XOR
+            //             = (is_node AND
+            //                  (which_op AND (atom_left OR atom_right)) XOR
+            //                  (!which_op AND atom_left AND atom_right)) XOR
+            //               (!is_node AND (is_eq XOR (which_op AND is_lt))) XOR
             //               negate
             // and compute modulo 2:
-            // result_bool = is_op * (
-            //                 which_op * atom_left * atom_right +
-            //                 (1 + which_op) * (atom_left + atom_right + atom_left * atom_right)) +
-            //               (1 + is_op) * (is_eq + which_op * is_lt)
-            //             = is_op * (
-            //                 atom_left * atom_right +
-            //                 (1 + which_op) * (atom_left + atom_right)) +
-            //               (1 + is_op) * (is_eq + which_op * is_lt) +
+            // result_bool = is_node * (
+            //                 (1 + which_op) * atom_left * atom_right +
+            //                 which_op * (atom_left + atom_right + atom_left * atom_right)) +
+            //               (1 + is_node) * (is_eq + which_op * is_lt) +
             //               negate
-
-            let summand_1_and = &atom_left * &atom_right;
-            let summand_1_or = &which_op * &(&atom_left + &atom_right);
-            let summand_1 = &is_op * &(&summand_1_and + &summand_1_or);
-            let summand_0 = !is_op * (is_eq + which_op * is_lt);
-            result_bool = &summand_1 + &summand_0 + negate;
+            //
+            //  --> (rewrite (1 + 2 * which_op) * B => B)
+            // result_bool = is_node * (
+            //                 atom_left * atom_right +
+            //                 which_op * (atom_left + atom_right)) +
+            //               (1 + is_node) * (is_eq + which_op * is_lt) +
+            //               negate
+            //
+            //  --> (rewrite (1 + is_node) * B => B + is_node * B)
+            //  --> (factorize is_node)
+            // result_bool = is_node * (
+            //                 atom_left * atom_right +
+            //                 is_eq +
+            //                 which_op * (atom_left + atom_right + is_lt)) +
+            //               is_eq + which_op * lt + negate
+            //  ==> (only 4 multiplications are required)
+            result_bool = is_node
+                * (&(&atom_left * &atom_right)
+                    + &is_eq
+                    + &which_op * &(&(atom_left + atom_right) + &is_lt))
+                + is_eq
+                + which_op * is_lt
+                + negate;
 
             // enforce that result_bool encrypts either 0 or 1
             // result_bool = new_fhe_bool(result_bool.into_boolean_block().into_inner());
