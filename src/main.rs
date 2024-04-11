@@ -329,6 +329,15 @@ fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey, WopbsParameters) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // test egg rewrites
+    let _ = (
+        query::simplify("(< x 0)"),
+        query::simplify("(NOT (< x 0))"),
+        query::simplify(&format!("(<= x {})", u32::MAX)),
+        query::simplify("(OR (<= x 3) (<= x 7))"),
+        query::simplify("(OR (NOT x) (NOT y))"),
+    );
+
     let (client_key, server_key, wopbs_key, wopbs_params) = generate_keys();
 
     let query_path = PathBuf::from("query.txt");
