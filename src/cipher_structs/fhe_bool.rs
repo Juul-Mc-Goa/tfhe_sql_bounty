@@ -10,7 +10,7 @@ use tfhe::integer::{
 use tfhe::shortint::ciphertext::Degree;
 use tfhe::shortint::Ciphertext;
 
-use std::ops::{Add, Mul, Not};
+use std::ops::{Add, AddAssign, Mul, Not};
 
 /// A struct designed to compute the XOR and NOT gates without doing a PBS.
 ///
