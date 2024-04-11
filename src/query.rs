@@ -5,8 +5,6 @@
 
 use crate::{CellContent, CellType, TableHeaders};
 
-use egg::{rewrite as rw, *};
-
 use sqlparser::ast::{BinaryOperator, Expr, Ident, SetExpr, Statement, UnaryOperator, Value};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -47,13 +45,13 @@ pub enum WhereSyntaxTree {
     Nor(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
 }
 
-/// Holds a tuple `(is_op, left, which_op, right, negate)`. Each tuple represents
+/// Holds a tuple `(is_node, left, which_op, right, negate)`. Each tuple represents
 /// either one `WhereSyntaxTree::Atom` (unless the value type is `ShortString`) or
 /// one `WhereSyntaxTree::Node`. Each `Atom` value is encoded as one `u32`, except
 /// `ShortString` which is encoded as a eight `u32`s.
 ///
 /// The encoding is made as follows:
-/// - `is_op`:
+/// - `is_node`:
 ///   - `true`: the tuple encodes a binary `Node`
 ///     1. `left`: index of the left child,
 ///     2. `which_op`:
@@ -378,7 +376,7 @@ impl WhereSyntaxTree {
     ///
     /// First encodes itself, then encrypt each element of the resulting vector.
     pub fn encrypt(&self, client_key: &ClientKey, headers: &TableHeaders) -> EncryptedSyntaxTree {
-        self.encode_with_index(headers, 0)
+        self.encode(headers)
             .into_iter()
             .map(|(is_op, left, which_op, right, negate)| {
                 (
@@ -393,20 +391,16 @@ impl WhereSyntaxTree {
     }
 }
 
-/// Builds an `WhereSyntaxTree` from a `base_index: u8` and a `sqlparser::Expr`.
-/// This is used to discard all unnecessary data that comes along a
-/// `sqlparser::Expr`.
-///
-/// The argument `base_index` is used when encoding the `WhereSyntaxTree`. See at
-/// [`EncodedInstruction`] for more explanation.
-impl From<(u8, Expr)> for WhereSyntaxTree {
-    fn from((base_index, expr): (u8, Expr)) -> Self {
+/// Builds an `WhereSyntaxTree` from a `sqlparser::Expr`.  This is used to
+/// discard all unnecessary data that comes along a `sqlparser::Expr`.
+impl From<Expr> for WhereSyntaxTree {
+    fn from(expr: Expr) -> Self {
         match expr {
-            Expr::Nested(e) => Self::from((base_index, e.as_ref().to_owned())),
+            Expr::Nested(e) => Self::from(e.as_ref().to_owned()),
             Expr::UnaryOp {
                 op: UnaryOperator::Not,
                 expr: e,
-            } => Self::from((base_index, e.as_ref().to_owned())).negate(),
+            } => Self::from(e.as_ref().to_owned()).negate(),
             Expr::UnaryOp { op, .. } => panic!("unknown unary operator {op:?}"),
             Expr::BinaryOp {
                 ref left,
@@ -428,8 +422,8 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
                 // where OP is one of AND, OR
                 // and l, r are SQL expressions
                 (l, r) => {
-                    let left = Self::from((base_index, l.clone()));
-                    let right = Self::from((left.index(base_index) + 1, r.clone()));
+                    let left = Self::from(l.clone());
+                    let right = Self::from(r.clone());
                     match op {
                         BinaryOperator::And => Self::And(Box::new(left), Box::new(right)),
                         BinaryOperator::Or => Self::Or(Box::new(left), Box::new(right)),
@@ -439,14 +433,6 @@ impl From<(u8, Expr)> for WhereSyntaxTree {
             },
             _ => todo!(),
         }
-    }
-}
-
-/// Builds an `WhereSyntaxTree` from a `sqlparser::Expr`. This is used to discard all
-/// unnecessary data that comes along a `sqlparser::Expr`.
-impl From<Expr> for WhereSyntaxTree {
-    fn from(e: Expr) -> Self {
-        Self::from((0, e))
     }
 }
 
@@ -471,147 +457,6 @@ pub fn build_where_syntax_tree(statement: Statement) -> WhereSyntaxTree {
         },
         _ => panic!("unknown statement: {statement:?}"),
     }
-}
-
-define_language! {
-    /// defines a simple language to model queries, then uses the `egg` library
-    /// to optimize them.
-    pub enum QueryLanguage {
-        "true" = True,
-        "false" = False,
-
-        "AND" = And([Id; 2]),
-        "OR" = Or([Id; 2]),
-        "NOT" = Not(Id),
-
-        Num(u32),
-
-        "=" = Eq([Id; 2]),
-        "<=" = Leq([Id; 2]),
-        "<" = Lt([Id; 2]),
-
-        "min" = Min([Id; 2]),
-        "max" = Max([Id; 2]),
-
-        Symbol(Symbol),
-    }
-}
-
-/// Returns a vector containing all the rewrite rules for `QueryLanguage`.
-pub fn rules() -> Vec<Rewrite> {
-    let trivial_bound_right = format!("(<= ?x {})", u32::MAX);
-    let trivial_bound_as_str = trivial_bound_right.as_str();
-    let mut rules: Vec<Rewrite> = vec![];
-    // not rules
-    rules.append(&mut rw!("not-true"; "(NOT true)" <=> "false"));
-    rules.append(&mut rw!("not-false"; "(NOT false)" <=> "true"));
-    rules.append(&mut rw!("double-negation"; "(NOT (NOT ?x))" <=> "?x"));
-    // and rules
-    rules.push(rw!("and-false"; "(AND ?x false)" => "false"));
-    rules.push(rw!("and-excluded-mid"; "(AND ?x (NOT ?x))" => "false"));
-    rules.append(&mut rw!("and-true"; "(AND ?x true)" <=> "?x"));
-    rules.append(&mut rw!("associate-and"; "(AND ?x (AND ?y ?z))" <=> "(AND (AND ?x ?y) ?z)"));
-    rules.append(&mut rw!("commute-and"; "(AND ?x ?y)" <=> "(AND ?y ?x)"));
-    rules.append(&mut rw!("idempotent-and"; "(AND ?x ?x)" <=> "?x"));
-    // or rules
-    rules.push(rw!("or-excluded-mid"; "(OR ?x (NOT ?x))" => "true"));
-    rules.push(rw!("or-true"; "(OR ?x true)" => "true"));
-    rules.append(&mut rw!("or-false"; "(OR ?x false)" <=> "?x"));
-    rules.append(&mut rw!("associate-or"; "(OR ?x (OR ?y ?z))" <=> "(OR (OR ?x ?y) ?z)"));
-    rules.append(&mut rw!("commute-or"; "(OR ?x ?y)" <=> "(OR ?y ?x)"));
-    rules.append(&mut rw!("idempotent-or"; "(OR ?x ?x)" <=> "?x"));
-    // and-or-not rules
-    rules.append(
-        &mut rw!("distribute-or"; "(AND ?x (OR ?y ?z))" <=> "(OR (AND ?x ?y) (AND ?x ?z))"),
-    );
-    rules.append(
-        &mut rw!("distribute-and"; "(OR ?x (AND ?y ?z))" <=> "(AND (OR ?x ?y) (OR ?x ?z))"),
-    );
-    rules.append(&mut rw!("de-morgan"; "(NOT (AND ?x ?y))" <=> "(OR (NOT ?x) (NOT ?y))"));
-    // atom rules
-    rules.append(&mut rw!("neq-lt-or-gt"; "(NOT (= ?x ?y))" <=> "(OR (< ?x ?y) (NOT (<= ?x ?y)))"));
-    rules.append(&mut rw!("leq-and"; "(AND (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (min ?y ?z))"));
-    rules.append(&mut rw!("leq-or"; "(OR (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (max ?y ?z))"));
-    rules.push(rw!("bound-left"; "(< ?x 0)" => "false"));
-    rules.push(rw!("bound-right"; "(<= ?x 4294967295)" => "true")); // hardcoding u32::MAX
-
-    rules
-}
-
-pub type EGraph = egg::EGraph<QueryLanguage, ConstantFold>;
-pub type Rewrite = egg::Rewrite<QueryLanguage, ConstantFold>;
-
-/// Defines how to handle constants when simplifying queries.
-#[derive(Default)]
-pub struct ConstantFold;
-impl Analysis<QueryLanguage> for ConstantFold {
-    type Data = Option<(u32, PatternAst<QueryLanguage>)>;
-
-    fn make(egraph: &EGraph, enode: &QueryLanguage) -> Self::Data {
-        let x = |i: &Id| egraph[*i].data.as_ref().map(|d| d.0);
-        Some(match enode {
-            QueryLanguage::Num(c) => (*c, format!("{}", c).parse().unwrap()),
-            QueryLanguage::Max([a, b]) => (
-                x(a)?.max(x(b)?),
-                format!("(max {} {})", x(a)?, x(b)?).parse().unwrap(),
-            ),
-            QueryLanguage::Min([a, b]) => (
-                x(a)?.min(x(b)?),
-                format!("(min {} {})", x(a)?, x(b)?).parse().unwrap(),
-            ),
-            _ => return None,
-        })
-    }
-
-    fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-        merge_option(to, from, |a, b| {
-            assert_eq!(a.0, b.0, "Merged non-equal constants");
-            DidMerge(false, false)
-        })
-    }
-
-    fn modify(egraph: &mut EGraph, id: Id) {
-        let data = egraph[id].data.clone();
-        if let Some((c, pat)) = data {
-            if egraph.are_explanations_enabled() {
-                egraph.union_instantiations(
-                    &pat,
-                    &format!("{}", c).parse().unwrap(),
-                    &Default::default(),
-                    "constant_fold".to_string(),
-                );
-            } else {
-                let added = egraph.add(QueryLanguage::Num(c));
-                egraph.union(id, added);
-            }
-            // to not prune, comment this out
-            egraph[id].nodes.retain(|n| n.is_leaf());
-
-            #[cfg(debug_assertions)]
-            egraph[id].assert_unique_leaves();
-        }
-    }
-}
-
-/// parse an expression, simplify it using egg, and pretty print it back out
-pub fn simplify(s: &str) -> String {
-    // parse the expression, the type annotation tells it which Language to use
-    let expr: RecExpr<QueryLanguage> = s.parse().unwrap();
-
-    // simplify the expression using a Runner, which creates an e-graph with
-    // the given expression and runs the given rules over it
-    let runner = Runner::<QueryLanguage, ConstantFold, ()>::default()
-        .with_expr(&expr)
-        .run(&rules());
-
-    // the Runner knows which e-class the expression given with `with_expr` is in
-    let root = runner.roots[0];
-
-    // use an Extractor to pick the best element of the root eclass
-    let extractor = Extractor::new(&runner.egraph, AstSize);
-    let (best_cost, best) = extractor.find_best(root);
-    println!("Simplified {} to {} with cost {}", expr, best, best_cost);
-    best.to_string()
 }
 
 #[cfg(test)]

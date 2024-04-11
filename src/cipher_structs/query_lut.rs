@@ -8,20 +8,13 @@
 //! - `WopbsKey::circuit_bootstrapping_vertical_packing()` (`shortint` API)
 //! - `WopbsKey::circuit_bootstrap_with_bits()` (`shortint` API)
 //!
-//! Two versions of `core_crypto` functions are implemented:
-//! 1. [`regular_cmux_tree`](super::regular_cmux_tree): uses
-//! `cmux_tree_memory_optimized` from `core_crypto`, but with a different number
-//! of layers, and
-//! 2. [`recursive_cmux_tree`](super::recursive_cmux_tree): implements its own
-//! [`cmux_tree_recursive`] fonction.
-//!
 //! Here is the list of modified `core_crypto` functions:
 //! - `circuit_bootstrap_boolean_vertical_packing`
 //! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized`
 //! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement`
 //! - `vertical_packing`
 //! - `vertical_packing_scratch`
-//! - `cmux_tree_memory_optimized`
+//! - `cmux_tree_memory_optimized` (renamed to [`cmux_tree_recursive`])
 
 use rayon::prelude::*;
 

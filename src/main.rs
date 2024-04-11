@@ -182,7 +182,7 @@
 //! As an instruction can refer to other
 //! instructions in the encoded query, we need to homomorphically evaluate a
 //! function `u8 -> Ciphertext`, also called a "hidden lookup table".  This is
-//! done in the [`hidden_function_lut`](cipher_structs::hidden_function_lut) module.
+//! done in the [`query_lut`](cipher_structs::query_lut) module.
 //!
 //! ## Replacing boolean operators with addition and multiplication mod 2
 //! We note the following:
@@ -234,6 +234,7 @@ use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 mod cipher_structs;
 mod query;
+mod simplify_query;
 mod tables;
 
 use query::*;
@@ -330,12 +331,15 @@ fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey, WopbsParameters) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // test egg rewrites
+    use crate::simplify_query::simplify;
     let _ = (
-        query::simplify("(< x 0)"),
-        query::simplify("(NOT (< x 0))"),
-        query::simplify(&format!("(<= x {})", u32::MAX)),
-        query::simplify("(OR (<= x 3) (<= x 7))"),
-        query::simplify("(OR (NOT x) (NOT y))"),
+        simplify("(< x 0)"),
+        simplify("(NOT (< x 0))"),
+        simplify(&format!("(<= x {})", u32::MAX)),
+        simplify("(OR (<= x 3) (<= x 7))"),
+        simplify("(OR (NOT x) (NOT y))"),
+        simplify("(OR (< x 0) y)"),
+        simplify("(AND (< x 0) y)"),
     );
 
     let (client_key, server_key, wopbs_key, wopbs_params) = generate_keys();
