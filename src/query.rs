@@ -499,32 +499,43 @@ define_language! {
 
 /// Returns a vector containing all the rewrite rules for `QueryLanguage`.
 pub fn rules() -> Vec<Rewrite> {
-    vec![
-        rw!("not-true"; "(NOT true)" => "false"),
-        rw!("double-negation"; "(NOT (NOT ?x))" => "?x"),
-        // and rules
-        rw!("and-excluded-mid"; "(AND ?x (NOT ?x))" => "false"),
-        rw!("and-true"; "(AND ?x true)" => "?x"),
-        rw!("and-false"; "(AND ?x false)" => "false"),
-        rw!("associate-and"; "(AND ?x (AND ?y ?z))" => "(AND (AND ?x ?y) ?z)"),
-        rw!("commute-and"; "(AND ?x ?y)" => "(AND ?y ?x)"),
-        rw!("idempotent-and"; "(AND ?x ?x)" => "?x"),
-        // or rules
-        rw!("or-excluded-mid"; "(OR ?x (NOT ?x))" => "true"),
-        rw!("or-true"; "(OR ?x true)" => "true"),
-        rw!("or-false"; "(OR ?x false)" => "?x"),
-        rw!("associate-or"; "(OR ?x (OR ?y ?z))" => "(OR (OR ?x ?y) ?z)"),
-        rw!("commute-or"; "(OR ?x ?y)" => "(OR ?y ?x)"),
-        rw!("idempotent-or"; "(OR ?x ?x)" => "?x"),
-        // and-or-not rules
-        rw!("distribute-or"; "(AND ?x (OR ?y ?z))" => "(OR (AND ?x ?y) (AND ?x ?z))"),
-        rw!("distribute-and"; "(OR ?x (AND ?y ?z))" => "(AND (OR ?x ?y) (OR ?x ?z))"),
-        rw!("de-morgan"; "(NOT (AND ?x ?y))" => "(OR (NOT ?x) (NOT ?y))"),
-        // atom rules
-        rw!("neq-lt-or-gt"; "(NOT (= ?x ?y))" => "(OR (< ?x ?y) (NOT (<= ?x ?y)))"),
-        rw!("leq-and"; "(AND (<= ?x ?y) (<= ?x ?z))" => "(<= x (min ?y ?z))"),
-        rw!("leq-or"; "(OR (<= ?x ?y) (<= ?x ?z))" => "(<= x (max ?y ?z))"),
-    ]
+    let trivial_bound_right = format!("(<= ?x {})", u32::MAX);
+    let trivial_bound_as_str = trivial_bound_right.as_str();
+    let mut rules: Vec<Rewrite> = vec![];
+    // not rules
+    rules.append(&mut rw!("not-true"; "(NOT true)" <=> "false"));
+    rules.append(&mut rw!("not-false"; "(NOT false)" <=> "true"));
+    rules.append(&mut rw!("double-negation"; "(NOT (NOT ?x))" <=> "?x"));
+    // and rules
+    rules.push(rw!("and-false"; "(AND ?x false)" => "false"));
+    rules.push(rw!("and-excluded-mid"; "(AND ?x (NOT ?x))" => "false"));
+    rules.append(&mut rw!("and-true"; "(AND ?x true)" <=> "?x"));
+    rules.append(&mut rw!("associate-and"; "(AND ?x (AND ?y ?z))" <=> "(AND (AND ?x ?y) ?z)"));
+    rules.append(&mut rw!("commute-and"; "(AND ?x ?y)" <=> "(AND ?y ?x)"));
+    rules.append(&mut rw!("idempotent-and"; "(AND ?x ?x)" <=> "?x"));
+    // or rules
+    rules.push(rw!("or-excluded-mid"; "(OR ?x (NOT ?x))" => "true"));
+    rules.push(rw!("or-true"; "(OR ?x true)" => "true"));
+    rules.append(&mut rw!("or-false"; "(OR ?x false)" <=> "?x"));
+    rules.append(&mut rw!("associate-or"; "(OR ?x (OR ?y ?z))" <=> "(OR (OR ?x ?y) ?z)"));
+    rules.append(&mut rw!("commute-or"; "(OR ?x ?y)" <=> "(OR ?y ?x)"));
+    rules.append(&mut rw!("idempotent-or"; "(OR ?x ?x)" <=> "?x"));
+    // and-or-not rules
+    rules.append(
+        &mut rw!("distribute-or"; "(AND ?x (OR ?y ?z))" <=> "(OR (AND ?x ?y) (AND ?x ?z))"),
+    );
+    rules.append(
+        &mut rw!("distribute-and"; "(OR ?x (AND ?y ?z))" <=> "(AND (OR ?x ?y) (OR ?x ?z))"),
+    );
+    rules.append(&mut rw!("de-morgan"; "(NOT (AND ?x ?y))" <=> "(OR (NOT ?x) (NOT ?y))"));
+    // atom rules
+    rules.append(&mut rw!("neq-lt-or-gt"; "(NOT (= ?x ?y))" <=> "(OR (< ?x ?y) (NOT (<= ?x ?y)))"));
+    rules.append(&mut rw!("leq-and"; "(AND (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (min ?y ?z))"));
+    rules.append(&mut rw!("leq-or"; "(OR (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (max ?y ?z))"));
+    rules.push(rw!("bound-left"; "(< ?x 0)" => "false"));
+    rules.push(rw!("bound-right"; "(<= ?x 4294967295)" => "true")); // hardcoding u32::MAX
+
+    rules
 }
 
 pub type EGraph = egg::EGraph<QueryLanguage, ConstantFold>;
@@ -580,6 +591,27 @@ impl Analysis<QueryLanguage> for ConstantFold {
             egraph[id].assert_unique_leaves();
         }
     }
+}
+
+/// parse an expression, simplify it using egg, and pretty print it back out
+pub fn simplify(s: &str) -> String {
+    // parse the expression, the type annotation tells it which Language to use
+    let expr: RecExpr<QueryLanguage> = s.parse().unwrap();
+
+    // simplify the expression using a Runner, which creates an e-graph with
+    // the given expression and runs the given rules over it
+    let runner = Runner::<QueryLanguage, ConstantFold, ()>::default()
+        .with_expr(&expr)
+        .run(&rules());
+
+    // the Runner knows which e-class the expression given with `with_expr` is in
+    let root = runner.roots[0];
+
+    // use an Extractor to pick the best element of the root eclass
+    let extractor = Extractor::new(&runner.egraph, AstSize);
+    let (best_cost, best) = extractor.find_best(root);
+    println!("Simplified {} to {} with cost {}", expr, best, best_cost);
+    best.to_string()
 }
 
 #[cfg(test)]
