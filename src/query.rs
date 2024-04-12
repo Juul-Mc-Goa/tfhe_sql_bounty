@@ -45,6 +45,27 @@ pub enum WhereSyntaxTree {
     Nor(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
 }
 
+/// An atomic condition of the form `column OP value` where `value` is of type
+/// `u32`.
+#[derive(Clone, Debug)]
+pub struct U32Atom {
+    pub index: u8,
+    pub op: ComparisonOp,
+    pub value: u32,
+}
+
+/// A variant of `WhereSyntaxTree` where `AtomicCondition` is replaced by `U32Atom`
+#[derive(Clone, Debug)]
+pub enum U32SyntaxTree {
+    True,
+    False,
+    Atom(U32Atom),
+    And(Box<U32SyntaxTree>, Box<U32SyntaxTree>),
+    Or(Box<U32SyntaxTree>, Box<U32SyntaxTree>),
+    Nand(Box<U32SyntaxTree>, Box<U32SyntaxTree>),
+    Nor(Box<U32SyntaxTree>, Box<U32SyntaxTree>),
+}
+
 /// Holds a tuple `(is_node, left, which_op, right, negate)`. Each tuple represents
 /// either one `WhereSyntaxTree::Atom` (unless the value type is `ShortString`) or
 /// one `WhereSyntaxTree::Node`. Each `Atom` value is encoded as one `u32`, except
@@ -133,6 +154,12 @@ impl ComparisonOp {
     }
 }
 
+impl U32Atom {
+    pub fn negate(&mut self) {
+        self.op.negate()
+    }
+}
+
 impl AtomicCondition {
     /// Extracts the type of a cell appearing in an `AtomicCondition`.
     fn cell_type(&self) -> CellType {
@@ -151,6 +178,40 @@ impl AtomicCondition {
 
     pub fn negate(&mut self) {
         self.op.negate()
+    }
+
+    pub fn to_u32_syntax_tree(&self, headers: &TableHeaders) -> U32SyntaxTree {
+        let base_index = headers.index_of(self.ident.clone()).unwrap() as u8;
+        match self.cell_type() {
+            CellType::ShortString => {
+                let u32_vec = self.value.encode();
+                let mut result = U32SyntaxTree::Atom(U32Atom {
+                    index: base_index,
+                    op: ComparisonOp::Equal,
+                    value: u32_vec[0],
+                });
+                for (v, i) in u32_vec[1..].iter().zip(1..) {
+                    result = U32SyntaxTree::And(
+                        Box::new(result),
+                        Box::new(U32SyntaxTree::Atom(U32Atom {
+                            index: base_index + (i as u8),
+                            op: ComparisonOp::Equal,
+                            value: *v,
+                        })),
+                    );
+                }
+                match &self.op {
+                    ComparisonOp::Equal => result,
+                    ComparisonOp::NotEqual => result.negate(),
+                    o => panic!("Operator {o:?} unsupported for String."),
+                }
+            }
+            _ => U32SyntaxTree::Atom(U32Atom {
+                index: base_index,
+                op: self.op.clone(),
+                value: self.value.encode()[0],
+            }),
+        }
     }
 
     /// Encodes an `AtomicCondition` into a (vector of) [`EncodedInstruction`]s.
@@ -268,6 +329,24 @@ impl From<(Ident, BinaryOperator, Ident)> for AtomicCondition {
         let op = ComparisonOp::from(sqlparser_term.1);
         let value = CellContent::ShortString(sqlparser_term.2.value);
         Self { ident, op, value }
+    }
+}
+
+impl U32SyntaxTree {
+    pub fn negate(self) -> Self {
+        match self {
+            U32SyntaxTree::True => U32SyntaxTree::False,
+            U32SyntaxTree::False => U32SyntaxTree::True,
+            U32SyntaxTree::Atom(a) => {
+                let mut new_atom = a.clone();
+                new_atom.negate();
+                U32SyntaxTree::Atom(new_atom)
+            }
+            U32SyntaxTree::And(a, b) => U32SyntaxTree::Nand(a, b),
+            U32SyntaxTree::Nand(a, b) => U32SyntaxTree::And(a, b),
+            U32SyntaxTree::Or(a, b) => U32SyntaxTree::Nor(a, b),
+            U32SyntaxTree::Nor(a, b) => U32SyntaxTree::Or(a, b),
+        }
     }
 }
 
