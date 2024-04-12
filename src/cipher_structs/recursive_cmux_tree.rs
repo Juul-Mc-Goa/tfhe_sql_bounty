@@ -351,11 +351,7 @@ pub fn cmux_tree_recursive(
         fft: FftView<'a>,
         mut stack: PodStack<'a>,
     ) {
-        let new_bit_significance = if current_bit_significance == 0 {
-            0
-        } else {
-            current_bit_significance - 1
-        };
+        let new_bit_significance = current_bit_significance.saturating_sub(1);
         if boolean_list.count() == 0 {
             layers_glwe
                 .get_mut(0) // layers_glwe should have only one entity
@@ -366,6 +362,7 @@ pub fn cmux_tree_recursive(
             let other_lut_index = mid + current_lut_index;
 
             let (head, tail) = boolean_list.split_at(1);
+            // let head = head.to
             let head = FourierGgswCiphertext::from_container(
                 head.data(),
                 head.glwe_size(),
@@ -374,7 +371,7 @@ pub fn cmux_tree_recursive(
                 head.decomposition_level_count(),
             );
 
-            // first compute layer[i+1]
+            // first compute lut0[tail], result gets stored in layers_glwe[1]
             recursive_cmux(
                 lut,
                 &mut layers_glwe.get_sub_mut(1..),
@@ -387,7 +384,7 @@ pub fn cmux_tree_recursive(
                 stack.rb_mut(),
             );
 
-            // copy layer[i+1] into layer[i]
+            // copy lut0[tail] into layers_glwe[0]
             {
                 // weird iterator gymnastics because layers_glwe is a mutable reference
                 let mut current_and_next_iter = layers_glwe.iter_mut();
@@ -397,7 +394,10 @@ pub fn cmux_tree_recursive(
                 current.as_mut().copy_from_slice(next.as_ref());
             }
 
+            // define diff for the cmux
             let (diff_data, mut stack) = if other_lut_index >= lut.entity_count() {
+                // the other index is too large for the lut, so we return the
+                // default null glwe
                 stack.rb_mut().collect_aligned(
                     CACHELINE_ALIGN,
                     layers_glwe
@@ -407,6 +407,7 @@ pub fn cmux_tree_recursive(
                         .map(|&a| 0.wrapping_sub(a)),
                 )
             } else {
+                // compute lut1[tail]
                 recursive_cmux(
                     lut,
                     &mut layers_glwe.get_sub_mut(1..),
@@ -418,6 +419,7 @@ pub fn cmux_tree_recursive(
                     fft,
                     stack.rb_mut(),
                 );
+                // compute the difference lut1[tail] - lut0[tail]
                 stack.rb_mut().collect_aligned(
                     CACHELINE_ALIGN,
                     layers_glwe
@@ -432,10 +434,11 @@ pub fn cmux_tree_recursive(
             let diff =
                 GlweCiphertext::from_container(&*diff_data, polynomial_size, ciphertext_modulus);
 
+            // compute cmux(head, lut1[tail], lut0[tail])
             inner_add_external_product_assign(
-                layers_glwe.get_mut(0),
+                layers_glwe.get_mut(0), // lut0[tail]
                 head,
-                diff,
+                diff, // lut1[tail] - lut0[tail]
                 fft,
                 stack.rb_mut(),
             );
