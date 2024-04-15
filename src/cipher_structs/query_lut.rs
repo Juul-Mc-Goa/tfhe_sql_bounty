@@ -8,8 +8,8 @@
 //! - `WopbsKey::circuit_bootstrapping_vertical_packing()` (`shortint` API)
 //! - `WopbsKey::circuit_bootstrap_with_bits()` (`shortint` API)
 //!
-//! Modified `core_crypto` functions have their own module
-//! [`recursive_cmux_tree`](super::recursive_cmux_tree).
+//! Modified `core_crypto` functions have their own
+//! [`recursive_cmux_tree`](super::recursive_cmux_tree) module.
 
 use rayon::prelude::*;
 

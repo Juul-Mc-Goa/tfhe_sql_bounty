@@ -10,13 +10,17 @@ pub struct EntryLUT<'a> {
         IntegerWopbsLUT,
         IntegerWopbsLUT,
         IntegerWopbsLUT,
+        IntegerWopbsLUT,
+        IntegerWopbsLUT,
+        IntegerWopbsLUT,
+        IntegerWopbsLUT,
     ),
     server_key: &'a ServerKey,
     wopbs_key: &'a WopbsKey,
 }
 
 impl<'a> EntryLUT<'a> {
-    pub fn new(entry: &'a Vec<u32>, server_key: &'a ServerKey, wopbs_key: &'a WopbsKey) -> Self {
+    pub fn new(entry: &'a Vec<u64>, server_key: &'a ServerKey, wopbs_key: &'a WopbsKey) -> Self {
         let entry_length = entry.len();
         // the server_key.generate_lut_radix() method needs a ciphertext for
         // computing the lut size. We use num_blocks = 4, i.e. we assume the
@@ -36,12 +40,20 @@ impl<'a> EntryLUT<'a> {
         let f0 = |u: u64| -> u64 { f(u) % 256 }; // lsb
         let f1 = |u: u64| -> u64 { (f(u) >> 8) % 256 };
         let f2 = |u: u64| -> u64 { (f(u) >> 16) % 256 };
-        let f3 = |u: u64| -> u64 { (f(u) >> 24) % 256 }; //msb
+        let f3 = |u: u64| -> u64 { (f(u) >> 24) % 256 };
+        let f4 = |u: u64| -> u64 { (f(u) >> 32) % 256 };
+        let f5 = |u: u64| -> u64 { (f(u) >> 40) % 256 };
+        let f6 = |u: u64| -> u64 { (f(u) >> 48) % 256 };
+        let f7 = |u: u64| -> u64 { (f(u) >> 56) % 256 }; //msb
         let lut = (
             wopbs_key.generate_lut_radix(&max_argument, f0),
             wopbs_key.generate_lut_radix(&max_argument, f1),
             wopbs_key.generate_lut_radix(&max_argument, f2),
             wopbs_key.generate_lut_radix(&max_argument, f3),
+            wopbs_key.generate_lut_radix(&max_argument, f4),
+            wopbs_key.generate_lut_radix(&max_argument, f5),
+            wopbs_key.generate_lut_radix(&max_argument, f6),
+            wopbs_key.generate_lut_radix(&max_argument, f7),
         );
 
         Self {
@@ -55,30 +67,34 @@ impl<'a> EntryLUT<'a> {
         let ct = self
             .wopbs_key
             .keyswitch_to_wopbs_params(self.server_key, index);
+
         let ct_res0 = self.wopbs_key.wopbs(&ct, &self.lut.0);
         let ct_res1 = self.wopbs_key.wopbs(&ct, &self.lut.1);
         let ct_res2 = self.wopbs_key.wopbs(&ct, &self.lut.2);
         let ct_res3 = self.wopbs_key.wopbs(&ct, &self.lut.3);
+        let ct_res4 = self.wopbs_key.wopbs(&ct, &self.lut.4);
+        let ct_res5 = self.wopbs_key.wopbs(&ct, &self.lut.5);
+        let ct_res6 = self.wopbs_key.wopbs(&ct, &self.lut.6);
+        let ct_res7 = self.wopbs_key.wopbs(&ct, &self.lut.7);
 
-        let mut result = self
-            .wopbs_key
-            .keyswitch_to_pbs_params(&ct_res0)
-            .into_blocks();
-        result.extend(
-            self.wopbs_key
-                .keyswitch_to_pbs_params(&ct_res1)
-                .into_blocks(),
-        );
-        result.extend(
-            self.wopbs_key
-                .keyswitch_to_pbs_params(&ct_res2)
-                .into_blocks(),
-        );
-        result.extend(
-            self.wopbs_key
-                .keyswitch_to_pbs_params(&ct_res3)
-                .into_blocks(),
-        );
+        let mut result: Vec<tfhe::shortint::Ciphertext> = Vec::new();
+
+        let mut extend_result = |ct_result: &RadixCiphertext| {
+            result.extend(
+                self.wopbs_key
+                    .keyswitch_to_pbs_params(ct_result)
+                    .into_blocks(),
+            );
+        };
+
+        extend_result(&ct_res0);
+        extend_result(&ct_res1);
+        extend_result(&ct_res2);
+        extend_result(&ct_res3);
+        extend_result(&ct_res4);
+        extend_result(&ct_res5);
+        extend_result(&ct_res6);
+        extend_result(&ct_res7);
 
         RadixCiphertext::from_blocks(result)
     }
