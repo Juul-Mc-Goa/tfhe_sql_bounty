@@ -47,7 +47,7 @@ pub enum WhereSyntaxTree {
 }
 
 /// An atomic condition of the form `column OP value` where `value` is of type
-/// `u32`.
+/// `u64`.
 #[derive(Clone, Debug)]
 pub struct U64Atom {
     pub index: u8,
@@ -55,7 +55,7 @@ pub struct U64Atom {
     pub value: u64,
 }
 
-/// A variant of `WhereSyntaxTree` where `AtomicCondition` is replaced by `U32Atom`
+/// A simple enum holding the syntax tree to the right of the `WHERE` keyword.
 #[derive(Clone, Debug)]
 pub enum U64SyntaxTree {
     True,
@@ -68,13 +68,13 @@ pub enum U64SyntaxTree {
 }
 
 /// Holds a tuple `(is_node, left, which_op, right, negate)`. Each tuple represents
-/// either one `WhereSyntaxTree::Atom` (unless the value type is `ShortString`) or
-/// one `WhereSyntaxTree::Node`. Each `Atom` value is encoded as one `u32`, except
-/// `ShortString` which is encoded as a eight `u32`s.
+/// either one `U64SyntaxTree::Atom` (unless the value type is `ShortString`) or
+/// one ndoe. Each `Atom` value is encoded as one `u64`, except
+/// `ShortString` which is encoded as a four `u64`s.
 ///
 /// The encoding is made as follows:
 /// - `is_node`:
-///   - `true`: the tuple encodes a binary `Node`
+///   - `true`: the tuple encodes a boolean node
 ///     1. `left`: index of the left child,
 ///     2. `which_op`:
 ///         - `true`: `OR`,
@@ -88,8 +88,7 @@ pub enum U64SyntaxTree {
 ///     3. `right`: value against which `left` is tested,
 /// - `negate`: encodes wether to negate the boolean result of `left which_op
 ///    right`.
-pub type EncodedInstruction = (bool, u8, bool, u32, bool);
-pub type EncodedInstruction64 = (bool, u8, bool, u64, bool);
+pub type EncodedInstruction = (bool, u8, bool, u64, bool);
 
 /// Encrypted variant of `EncodedInstruction`.
 ///
@@ -171,7 +170,7 @@ impl U64Atom {
         )
     }
 
-    pub fn encode(&self) -> EncodedInstruction64 {
+    pub fn encode(&self) -> EncodedInstruction {
         let index = self.index;
         let value = self.value;
         let (op, negate, value) = match self.op {
@@ -218,7 +217,7 @@ impl U64SyntaxTree {
         }
     }
 
-    /// Stringifies a `WhereSyntaxTree` for debugging purposes.
+    /// Stringifies a `U64SyntaxTree` for debugging purposes.
     #[allow(dead_code)]
     pub fn to_string(&self) -> String {
         self.to_string_lines(0).join("\n")
@@ -304,17 +303,6 @@ impl U64SyntaxTree {
         let cell_type = headers.type_of(ident.clone()).unwrap();
         let index = headers.index_of(ident.clone()).unwrap();
 
-        let parse_u8 = |s: String| u8::from_str(s.as_str()).unwrap() as u64;
-        let parse_u16 = |s: String| u16::from_str(s.as_str()).unwrap() as u64;
-        let parse_u32 = |s: String| u32::from_str(s.as_str()).unwrap() as u64;
-
-        // switch the MSB of signed integers so that
-        // parse_i8(-1) < parse_i8(1)
-        let parse_i8 = |s: String| (i8::from_str(s.as_str()).unwrap() as u64) ^ (1 << 63);
-        let parse_i16 = |s: String| (i16::from_str(s.as_str()).unwrap() as u64) ^ (1 << 63);
-        let parse_i32 = |s: String| (i32::from_str(s.as_str()).unwrap() as u64) ^ (1 << 63);
-        let parse_i64 = |s: String| (i64::from_str(s.as_str()).unwrap() as u64) ^ (1 << 63);
-
         let op = ComparisonOp::from(sqlparser_term.1);
 
         let build_self = |u: u64| {
@@ -369,8 +357,8 @@ impl U64SyntaxTree {
     }
 
     /// Encodes itself into a `Vec<EncodedInstruction64>`.
-    pub fn encode_with_index(&self, base_index: u8) -> Vec<EncodedInstruction64> {
-        let mut result: Vec<EncodedInstruction64> = Vec::new();
+    pub fn encode_with_index(&self, base_index: u8) -> Vec<EncodedInstruction> {
+        let mut result: Vec<EncodedInstruction> = Vec::new();
 
         let mut add_node = |a: &Box<Self>, b: &Box<Self>, which_op: bool, negate: bool| {
             result.append(&mut a.encode_with_index(base_index));
@@ -394,11 +382,11 @@ impl U64SyntaxTree {
     }
 
     /// Encodes itself into a `Vec<EncodedInstruction64>`.
-    pub fn encode(&self) -> Vec<EncodedInstruction64> {
+    pub fn encode(&self) -> Vec<EncodedInstruction> {
         self.encode_with_index(0_u8)
     }
 
-    /// Encrypts a `WhereSyntaxTree`.
+    /// Encrypts a `U64SyntaxTree`.
     ///
     /// First applies `Self::simplify()` from module `simplify_query`, then
     /// encodes itself, and encrypts each element of the resulting vector.
