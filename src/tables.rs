@@ -1,7 +1,7 @@
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 use tfhe::integer::wopbs::WopbsKey;
-use tfhe::integer::{ClientKey, RadixCiphertext, ServerKey};
+use tfhe::integer::{ClientKey, IntegerCiphertext, RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
@@ -14,17 +14,19 @@ pub enum CellType {
     U8,
     U16,
     U32,
+    U64,
     I8,
     I16,
     I32,
+    I64,
     ShortString,
 }
 
 impl CellType {
-    /// given a type, returns its length when written as a vector of u32
+    /// given a type, returns its length when written as a vector of u64
     pub fn len(&self) -> usize {
         match self {
-            Self::ShortString => 8,
+            Self::ShortString => 4,
             _ => 1,
         }
     }
@@ -54,9 +56,11 @@ pub enum CellContent {
     U8(u8),
     U16(u16),
     U32(u32),
+    U64(u64),
     I8(i8),
     I16(i16),
     I32(i32),
+    I64(i64),
     ShortString(String),
 }
 
@@ -68,9 +72,11 @@ impl From<&CellContent> for CellType {
             CellContent::U8(_) => Self::U8,
             CellContent::U16(_) => Self::U16,
             CellContent::U32(_) => Self::U32,
+            CellContent::U64(_) => Self::U64,
             CellContent::I8(_) => Self::I8,
             CellContent::I16(_) => Self::I16,
             CellContent::I32(_) => Self::I32,
+            CellContent::I64(_) => Self::I64,
             CellContent::ShortString(_) => Self::ShortString,
         }
     }
@@ -84,33 +90,38 @@ impl CellContent {
             Self::U8(u) => format!("{u}"),
             Self::U16(u) => format!("{u}"),
             Self::U32(u) => format!("{u}"),
+            Self::U64(u) => format!("{u}"),
             Self::I8(i) => format!("{i}"),
             Self::I16(i) => format!("{i}"),
             Self::I32(i) => format!("{i}"),
+            Self::I64(i) => format!("{i}"),
             Self::ShortString(s) => s.clone(),
         }
     }
-    /// Encode every cell content as a vector of `u32`s. In every cases other than
+    /// Encode every cell content as a vector of `u64`s. In every cases other than
     /// `ShortString`, it has a length of 1.
-    pub fn encode(&self) -> Vec<u32> {
+    pub fn encode(&self) -> Vec<u64> {
         // switch the MSB of signed integers so that
         // switch_sign8(-1) < switch_sign8(1)
-        let switch_sign8 = |i: i8| (i as u32) ^ (1 << 31);
-        let switch_sign16 = |i: i16| (i as u32) ^ (1 << 31);
-        let switch_sign32 = |i: i32| (i as u32) ^ (1 << 31);
+        let switch_sign8 = |i: i8| (i as u64) ^ (1 << 31);
+        let switch_sign16 = |i: i16| (i as u64) ^ (1 << 31);
+        let switch_sign32 = |i: i32| (i as u64) ^ (1 << 31);
+        let switch_sign64 = |i: i64| (i as u64) ^ (1 << 31);
         match self {
-            Self::Bool(b) => vec![*b as u32],
-            Self::U8(u) => vec![*u as u32],
-            Self::U16(u) => vec![*u as u32],
-            Self::U32(u) => vec![*u as u32],
+            Self::Bool(b) => vec![*b as u64],
+            Self::U8(u) => vec![*u as u64],
+            Self::U16(u) => vec![*u as u64],
+            Self::U32(u) => vec![*u as u64],
+            Self::U64(u) => vec![*u as u64],
             Self::I8(i) => vec![switch_sign8(*i)],
             Self::I16(i) => vec![switch_sign16(*i)],
             Self::I32(i) => vec![switch_sign32(*i)],
+            Self::I64(i) => vec![switch_sign64(*i)],
             Self::ShortString(s) => {
                 let s_len = s.len();
                 let s_bytes = s.as_bytes();
-                let mut result: Vec<u32> = Vec::new();
-                let get_or_zero = |j: usize| (if j < s_len { s_bytes[j] } else { 0u8 }) as u32;
+                let mut result: Vec<u64> = Vec::new();
+                let get_or_zero = |j: usize| (if j < s_len { s_bytes[j] } else { 0u8 }) as u64;
                 for i in 0..8 {
                     let j = 4 * i;
                     let (b0, b1, b2, b3) = (
@@ -119,8 +130,8 @@ impl CellContent {
                         get_or_zero(j + 2),
                         get_or_zero(j + 3),
                     );
-                    let u32_from_bytes = (b0 << 24) + (b1 << 16) + (b2 << 8) + b3;
-                    result.push(u32_from_bytes);
+                    let u64_from_bytes = (b0 << 24) + (b1 << 16) + (b2 << 8) + b3;
+                    result.push(u64_from_bytes);
                 }
                 result
             }
@@ -136,9 +147,11 @@ impl From<(&str, &CellType)> for CellContent {
             CellType::U8 => Self::U8(u8::from_str(arg.0).unwrap()),
             CellType::U16 => Self::U16(u16::from_str(arg.0).unwrap()),
             CellType::U32 => Self::U32(u32::from_str(arg.0).unwrap()),
+            CellType::U64 => Self::U64(u64::from_str(arg.0).unwrap()),
             CellType::I8 => Self::I8(i8::from_str(arg.0).unwrap()),
             CellType::I16 => Self::I16(i16::from_str(arg.0).unwrap()),
             CellType::I32 => Self::I32(i32::from_str(arg.0).unwrap()),
+            CellType::I64 => Self::I64(i64::from_str(arg.0).unwrap()),
             CellType::ShortString => Self::ShortString(String::from(arg.0)),
         }
     }
@@ -149,13 +162,23 @@ impl From<(&str, &CellType)> for CellContent {
 pub struct TableHeaders(pub Vec<(String, CellType)>);
 
 impl TableHeaders {
+    /// Given a column identifier, returns its type.
+    pub fn type_of(&self, column: String) -> Result<CellType, String> {
+        for (label, cell_type) in self.0.iter() {
+            if label == &column {
+                return Ok(cell_type.clone());
+            }
+        }
+        Err(format!("column '{column}' does not exist"))
+    }
+
     /// Given a column identifier, returns the index of its first element. Each element is of type
-    /// u32, so an column of type u32 has 1 associated index, a column of type ShortString has 8, etc.
-    pub fn index_of(&self, column: String) -> Result<usize, String> {
+    /// u64, so an column of type u64 has 1 associated index, a column of type ShortString has 8, etc.
+    pub fn index_of(&self, column: String) -> Result<u8, String> {
         let mut result: usize = 0;
         for (label, cell_type) in self.0.iter() {
             if label == &column {
-                return Ok(result);
+                return Ok(result as u8);
             }
             result += cell_type.len();
         }
@@ -172,10 +195,10 @@ pub struct Table {
 
 /// An encoded representation of a SQL table.
 ///
-/// Each entry is stored as a `Vec<u32>`. A table is a vector of entries.
+/// Each entry is stored as a `Vec<u64>`. A table is a vector of entries.
 // #[derive(Debug)]
 pub struct TableQueryRunner<'a> {
-    pub content: Vec<Vec<u32>>,
+    pub content: Vec<Vec<u64>>,
     pub client_key: &'a ClientKey,
     pub server_key: &'a ServerKey,
     pub wopbs_key: &'a WopbsKey,
@@ -195,7 +218,7 @@ impl<'a> TableQueryRunner<'a> {
                 .content
                 .iter()
                 .map(|entry| entry.iter().map(|cell| cell.encode()).flatten().collect())
-                .collect::<Vec<Vec<u32>>>(),
+                .collect::<Vec<Vec<u64>>>(),
             client_key,
             server_key,
             wopbs_key,
@@ -206,7 +229,7 @@ impl<'a> TableQueryRunner<'a> {
     /// Runs an encrypted query on a given entry.
     ///
     /// # Inputs
-    /// - `entry: &Vec<u32` an encoded entry,
+    /// - `entry: &Vec<u64>` an encoded entry,
     /// - `query: &EncryptedSyntaxTree` an encrypted `SELECT` query,
     /// - `query_lut: &mut QueryLUT` an updatable, hidden lookup table.
     /// # Output
@@ -223,10 +246,75 @@ impl<'a> TableQueryRunner<'a> {
     /// multiplications, using the fact that addition is much faster than PBS.
     /// We also use that:
     ///
-    /// $(a \leq b) \text{ XOR } (a = b) \iff a \lt b$.
+    /// $(a \lt b) \text{ XOR } (a = b) \iff a \leq b$.
+    ///
+    /// # Simplification of the boolean formulas:
+    ///
+    /// We first write:
+    /// ```
+    /// result_bool:
+    ///   | if is_node: node_bool XOR negate
+    ///   | else:       atom_bool XOR negate
+    /// node_bool:
+    ///   | if which_op: atom_left OR  atom_right
+    ///   | else:        atom_left AND atom_right
+    /// atom_bool:
+    ///   | if which_op: val_left <= val_right
+    ///   | else:        val_left == val_right
+    /// ```
+    /// and translate these definition into boolean formulas:
+    /// ```
+    /// result_bool = (is_node  AND node_bool) XOR
+    ///               (!is_node AND atom_bool) XOR
+    ///               negate
+    /// node_bool = (which_op  AND (atom_left OR  atom_right)) XOR
+    ///             (!which_op AND (atom_left AND atom_right))
+    /// atom_bool = (which_op  AND (val_left <= val_right)) XOR
+    ///             (!which_op AND (val_left == val_right))
+    /// ```
+    /// Let `is_lt, is_eq` be the two boolean result of `val_left < val_right`
+    /// and `val_left == val_right`.  We compute modulo 2:
+    /// ```
+    /// node_bool = which_op       * (atom_left + atom_right + atom_left * atom_right) +
+    ///             (1 + which_op) * atom_left * atom_right
+    ///           = atom_left * atom_right + which_op * (atom_left + atom_right)
+    /// ```
+    /// ```
+    /// atom_bool = which_op       * (is_lt + is_eq) +
+    ///             (1 + which_op) * is_eq
+    ///           = is_eq + which_op * is_lt
+    /// ```
+    /// So we get:
+    /// ```
+    /// result_bool = is_node       * (atom_left * atom_right + which_op * (atom_left + atom_right)) +
+    ///               (1 + is_node) * (is_eq + which_op * is_lt) +
+    ///               negate
+    ///
+    /// ```
+    /// This uses 5 multiplications. We can reduce to 4 by:
+    /// 1. distributing the product `(1 + is_node) * B => B + is_node * B`,
+    /// 2. factorising by `is_node`,
+    /// 3. factorising by `which_op`.
+    /// ```
+    /// result_bool = is_node * (
+    ///                 atom_left * atom_right +
+    ///                 is_eq +
+    ///                 which_op * (atom_left + atom_right + is_lt)) +
+    ///               is_eq + which_op * lt +
+    ///               negate
+    /// ```
+    /// Thus only 4 multiplications are required.
+    ///
+    /// # Total number of PBS required
+    /// 1. One for retrieving the value associated to an encrypted column identifier,
+    /// 2. Two for evaluating `is_eq` and `is_lt`,
+    /// 3. Two for retrieving `atom_left` and `atom_right`,
+    /// 4. Four for computing `result_bool`.
+    ///
+    /// So a total of 9 PBS for each `EncryptedInstruction`.
     fn run_query_on_entry(
         &self,
-        entry: &Vec<u32>,
+        entry: &Vec<u64>,
         query: &EncryptedSyntaxTree,
         query_lut: &mut QueryLUT,
     ) -> Ciphertext {
@@ -272,50 +360,6 @@ impl<'a> TableQueryRunner<'a> {
             let atom_left = new_fhe_bool(query_lut.apply(left));
             let atom_right = new_fhe_bool(query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4)));
 
-            // result_bool:
-            //   | if is_node: op_bool XOR negate
-            //   | else:   atom_bool XOR negate
-            // op_bool:
-            //   | if which_bool: atom_left OR atom_right
-            //   | else:          atom_left AND atom_right
-            // atom_bool:
-            //   | if which_bool: val_left <= val_right
-            //   | else:          val_left == val_right
-            //
-            // so we get:
-            // result_bool = (is_node AND
-            //                  (which_op AND (atom_left OR atom_right)) XOR
-            //                  (!which_op AND atom_left AND atom_right)) XOR
-            //               (!is_node AND
-            //                 ((which_op AND (is_eq XOR is_lt)) XOR (!which_op AND is_eq))) XOR
-            //               negate
-            //             = (is_node AND
-            //                  (which_op AND (atom_left OR atom_right)) XOR
-            //                  (!which_op AND atom_left AND atom_right)) XOR
-            //               (!is_node AND (is_eq XOR (which_op AND is_lt))) XOR
-            //               negate
-            // and compute modulo 2:
-            // result_bool = is_node * (
-            //                 (1 + which_op) * atom_left * atom_right +
-            //                 which_op * (atom_left + atom_right + atom_left * atom_right)) +
-            //               (1 + is_node) * (is_eq + which_op * is_lt) +
-            //               negate
-            //
-            //  --> (rewrite (1 + 2 * which_op) * B => B)
-            // result_bool = is_node * (
-            //                 atom_left * atom_right +
-            //                 which_op * (atom_left + atom_right)) +
-            //               (1 + is_node) * (is_eq + which_op * is_lt) +
-            //               negate
-            //
-            //  --> (rewrite (1 + is_node) * B => B + is_node * B)
-            //  --> (factorize is_node)
-            // result_bool = is_node * (
-            //                 atom_left * atom_right +
-            //                 is_eq +
-            //                 which_op * (atom_left + atom_right + is_lt)) +
-            //               is_eq + which_op * lt + negate
-            //  ==> (only 4 multiplications are required)
             result_bool = is_node
                 * (&(&atom_left * &atom_right)
                     + &is_eq

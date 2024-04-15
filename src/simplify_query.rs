@@ -1,6 +1,6 @@
 use egg::{rewrite as rw, *};
 
-use crate::{ComparisonOp, U32Atom, U32SyntaxTree};
+use crate::{ComparisonOp, U64Atom, U64SyntaxTree};
 
 define_language! {
     /// defines a simple language to model queries, then uses the `egg` library
@@ -13,7 +13,7 @@ define_language! {
         "OR" = Or([Id; 2]),
         "NOT" = Not(Id),
 
-        Num(u32),
+        Num(u64),
 
         "=" = Eq([Id; 2]),
         "<=" = Leq([Id; 2]),
@@ -78,23 +78,21 @@ pub fn rules() -> Vec<Rewrite> {
         rw!("exclusive-eq"; "(AND (= ?x ?y) (= ?x ?z))" => "false" if are_not_equal("?y", "?z")),
     );
     rules.append(&mut rw!("lt-leq-pred"; "(<= ?x (pred ?y))" <=> "(< ?x ?y)" if is_not_zero("?y")));
+    rules.append(&mut rw!("leq-lt-eq"; "(<= ?x ?y)" <=> "(OR (= ?x ?y) (< ?x ?y))"));
     rules.append(&mut rw!("neq-lt-or-gt"; "(NOT (= ?x ?y))" <=> "(OR (< ?x ?y) (NOT (<= ?x ?y)))"));
     rules.append(&mut rw!("leq-and"; "(AND (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (min ?y ?z))"));
     rules.append(&mut rw!("leq-or"; "(OR (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (max ?y ?z))"));
     rules.push(rw!("bound-left"; "(< ?x 0)" => "false"));
-    rules.push(rw!("bound-right"; "(<= ?x 4294967295)" => "true")); // hardcoding u32::MAX
+    rules.push(rw!("bound-right"; "(<= ?x 18446744073709551615)" => "true")); // hardcoding u64::MAX
 
     rules
 }
-
-pub type EGraph = egg::EGraph<QueryLanguage, ConstantFold>;
-pub type Rewrite = egg::Rewrite<QueryLanguage, ConstantFold>;
 
 /// Defines how to handle constants when simplifying queries.
 #[derive(Default)]
 pub struct ConstantFold;
 impl Analysis<QueryLanguage> for ConstantFold {
-    type Data = Option<(u32, PatternAst<QueryLanguage>)>;
+    type Data = Option<(u64, PatternAst<QueryLanguage>)>;
 
     fn make(egraph: &EGraph, enode: &QueryLanguage) -> Self::Data {
         let x = |i: &Id| egraph[*i].data.as_ref().map(|d| d.0);
@@ -143,9 +141,12 @@ impl Analysis<QueryLanguage> for ConstantFold {
     }
 }
 
+pub type EGraph = egg::EGraph<QueryLanguage, ConstantFold>;
+pub type Rewrite = egg::Rewrite<QueryLanguage, ConstantFold>;
+
 /// Defines the cost function to minimize.
 ///
-/// + constants are considered to have a cost of zero,
+/// + numerical constants are considered to have a cost of zero,
 /// + `NOT: a -> 1+a` is given a cost of `1.0`,
 /// + operations on constants are given a small non-zero cost,
 /// + every other operator requires some PBS, so is given a cost of `100.0`.
@@ -187,13 +188,13 @@ pub fn simplify(s: &str) -> String {
     best.to_string()
 }
 
-impl U32SyntaxTree {
+impl U64SyntaxTree {
     /// Builds an `egg::RecExpr`, to be used with `self.simplify`
     pub fn build_recexpr(&self, acc: &mut RecExpr<QueryLanguage>) -> Id {
         match self {
-            U32SyntaxTree::True => acc.add(QueryLanguage::True),
-            U32SyntaxTree::False => acc.add(QueryLanguage::False),
-            U32SyntaxTree::Atom(a) => {
+            U64SyntaxTree::True => acc.add(QueryLanguage::True),
+            U64SyntaxTree::False => acc.add(QueryLanguage::False),
+            U64SyntaxTree::Atom(a) => {
                 let index = QueryLanguage::Symbol(format!("id_{}", a.index).into());
                 let val = QueryLanguage::Num(a.value);
                 let (id_index, id_val) = (acc.add(index), acc.add(val));
@@ -216,23 +217,23 @@ impl U32SyntaxTree {
                 };
                 acc.add(new_node)
             }
-            U32SyntaxTree::And(a, b) => {
+            U64SyntaxTree::And(a, b) => {
                 let id_left = a.build_recexpr(acc);
                 let id_right = b.build_recexpr(acc);
                 acc.add(QueryLanguage::And([id_left, id_right]))
             }
-            U32SyntaxTree::Or(a, b) => {
+            U64SyntaxTree::Or(a, b) => {
                 let id_left = a.build_recexpr(acc);
                 let id_right = b.build_recexpr(acc);
                 acc.add(QueryLanguage::Or([id_left, id_right]))
             }
-            U32SyntaxTree::Nand(a, b) => {
+            U64SyntaxTree::Nand(a, b) => {
                 let id_left = a.build_recexpr(acc);
                 let id_right = b.build_recexpr(acc);
                 let id_and = acc.add(QueryLanguage::And([id_left, id_right]));
                 acc.add(QueryLanguage::Not(id_and))
             }
-            U32SyntaxTree::Nor(a, b) => {
+            U64SyntaxTree::Nor(a, b) => {
                 let id_left = a.build_recexpr(acc);
                 let id_right = b.build_recexpr(acc);
                 let id_and = acc.add(QueryLanguage::Or([id_left, id_right]));
@@ -241,16 +242,16 @@ impl U32SyntaxTree {
         }
     }
 
-    /// Builds a `U32SyntaxTree` from a root node `n` and an expression `e`.
+    /// Builds a `U64SyntaxTree` from a root node `n` and an expression `e`.
     fn from_root_and_expr(n: &QueryLanguage, e: &RecExpr<QueryLanguage>) -> Self {
         match n {
-            QueryLanguage::True => U32SyntaxTree::True,
-            QueryLanguage::False => U32SyntaxTree::False,
-            QueryLanguage::And([l, r]) => U32SyntaxTree::And(
+            QueryLanguage::True => U64SyntaxTree::True,
+            QueryLanguage::False => U64SyntaxTree::False,
+            QueryLanguage::And([l, r]) => U64SyntaxTree::And(
                 Box::new(Self::from_root_and_expr(&e[*l], e)),
                 Box::new(Self::from_root_and_expr(&e[*r], e)),
             ),
-            QueryLanguage::Or([l, r]) => U32SyntaxTree::Or(
+            QueryLanguage::Or([l, r]) => U64SyntaxTree::Or(
                 Box::new(Self::from_root_and_expr(&e[*l], e)),
                 Box::new(Self::from_root_and_expr(&e[*r], e)),
             ),
@@ -264,11 +265,11 @@ impl U32SyntaxTree {
                 };
                 match (&e[*l], &e[*r]) {
                     (QueryLanguage::Symbol(s), QueryLanguage::Num(u)) => {
-                        let str_index = &s.as_str()[2..];
-                        let index =
-                            str::parse::<u8>(str_index).expect("Could not parse id '{str_index}'");
+                        let str_index = &s.as_str()[3..];
+                        let index = str::parse::<u8>(str_index)
+                            .expect(format!("Could not parse id '{str_index}'").as_str());
                         let value = *u;
-                        U32SyntaxTree::Atom(U32Atom { index, op, value })
+                        U64SyntaxTree::Atom(U64Atom { index, op, value })
                     }
                     _ => panic!("unsupported atom: {n}"),
                 }
@@ -277,7 +278,7 @@ impl U32SyntaxTree {
         }
     }
 
-    /// Builds an `U32SyntaxTree` from a `RecExpr<QueryLanguage>`.
+    /// Builds an `U64SyntaxTree` from a `RecExpr<QueryLanguage>`.
     pub fn from_recexpr(expr: RecExpr<QueryLanguage>) -> Self {
         // the root node is at last position because of the required invariant
         // that a node's children must be before the node itself
@@ -285,8 +286,8 @@ impl U32SyntaxTree {
         Self::from_root_and_expr(root_node, &expr)
     }
 
-    /// Simplifies a `U32SyntaxTree` by converting it to a `RecExpr`,
-    /// simplifying the result, and converting back to `U32SyntaxTree`.
+    /// Simplifies a `U64SyntaxTree` by converting it to a `RecExpr`,
+    /// simplifying the result, and converting back to `U64SyntaxTree`.
     pub fn simplify(&self) -> Self {
         let mut expr = RecExpr::<QueryLanguage>::default();
         let _ = self.build_recexpr(&mut expr);
