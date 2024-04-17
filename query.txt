@@ -1,1 +1,1 @@
-SELECT * FROM table_1 WHERE (some_int > 100 OR some_int = 3)
+SELECT * FROM table_1 WHERE (some_str = 'some other line')

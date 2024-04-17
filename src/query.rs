@@ -4,13 +4,13 @@
 //! well as methods for encoding and encrypting them.
 
 use crate::encoding::*;
-use crate::{CellContent, CellType, TableHeaders};
+use crate::{CellType, TableHeaders};
 
 use sqlparser::ast::{BinaryOperator, Expr, Ident, SetExpr, Statement, UnaryOperator, Value};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
-use std::{fs::read_to_string, path::PathBuf, str::FromStr};
+use std::{fs::read_to_string, path::PathBuf};
 
 use tfhe::integer::{ClientKey, RadixCiphertext};
 use tfhe::shortint::Ciphertext;
@@ -24,26 +24,6 @@ pub enum ComparisonOp {
     GreaterEqual,
     GreaterThan,
     NotEqual,
-}
-
-/// An atomic condition of the form `column OP value`:
-/// - the `String` contains the identifier of the column being tested,
-/// - the `CellContent` contains the value against which it is tested.
-#[derive(Clone, Debug)]
-pub struct AtomicCondition {
-    pub ident: String,
-    pub op: ComparisonOp,
-    pub value: CellContent,
-}
-
-/// A simple enum holding the syntax tree to the right of the `WHERE` keyword.
-#[derive(Clone, Debug)]
-pub enum WhereSyntaxTree {
-    Atom(AtomicCondition),
-    And(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
-    Or(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
-    Nand(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
-    Nor(Box<WhereSyntaxTree>, Box<WhereSyntaxTree>),
 }
 
 /// An atomic condition of the form `column OP value` where `value` is of type
@@ -239,40 +219,8 @@ impl U64SyntaxTree {
         }
     }
 
-    fn string_to_u64_list(s: String) -> Vec<u64> {
-        let s_len = s.len();
-        let s_bytes = s.as_bytes();
-        let mut result: Vec<u64> = Vec::new();
-
-        let get_or_zero = |j: usize| (if j < s_len { s_bytes[j] } else { 0u8 }) as u64;
-
-        for i in 0..4 {
-            let j = 8 * i;
-            let b = [
-                get_or_zero(j),
-                get_or_zero(j + 1),
-                get_or_zero(j + 2),
-                get_or_zero(j + 3),
-                get_or_zero(j + 4),
-                get_or_zero(j + 5),
-                get_or_zero(j + 6),
-                get_or_zero(j + 7),
-            ];
-            let u64_from_bytes = (b[0] << 56)
-                + (b[1] << 48)
-                + (b[2] << 40)
-                + (b[3] << 32)
-                + (b[4] << 24)
-                + (b[5] << 16)
-                + (b[6] << 8)
-                + (b[7]);
-            result.push(u64_from_bytes);
-        }
-        result
-    }
-
     fn from_string(index: u8, op: ComparisonOp, s: String) -> Self {
-        let values = Self::string_to_u64_list(s);
+        let values = encode_string(s);
         let mut result = Self::Atom(U64Atom {
             index,
             op: ComparisonOp::Equal, // NotEqual is handled at the end
@@ -324,7 +272,12 @@ impl U64SyntaxTree {
             (CellType::I32, Value::Number(n, _b)) => build_self(parse_signed::<i32>(n)),
             (CellType::I64, Value::Number(n, _b)) => build_self(parse_signed::<i64>(n)),
             (CellType::ShortString, Value::UnQuotedString(s))
-            | (CellType::ShortString, Value::SingleQuotedString(s)) => {
+            | (CellType::ShortString, Value::SingleQuotedString(s))
+            | (CellType::ShortString, Value::DoubleQuotedString(s))
+            | (CellType::ShortString, Value::EscapedStringLiteral(s))
+            | (CellType::ShortString, Value::SingleQuotedByteStringLiteral(s))
+            | (CellType::ShortString, Value::DoubleQuotedByteStringLiteral(s))
+            | (CellType::ShortString, Value::RawStringLiteral(s)) => {
                 Self::from_string(index, op, s)
             }
             (c, t) => panic!("Type error: {ident} has type {c:?}, got {t:?}",),
@@ -370,8 +323,7 @@ impl U64SyntaxTree {
         match self {
             // HACK: False <=> query_lut.get(current_index) != 0
             Self::False => result.push((false, base_index, false, 0u64, true)),
-            // HACK: True <=> no instruction
-            Self::True => (),
+            Self::True => (), // True <=> no instruction
             Self::Atom(a) => result.push(a.encode()),
             Self::And(a, b) => add_node(a, b, false, false),
             Self::Nand(a, b) => add_node(a, b, false, true),

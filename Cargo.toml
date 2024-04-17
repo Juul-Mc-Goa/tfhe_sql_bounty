@@ -16,6 +16,7 @@ csv =  { version = "*" }
 egg = { version = "0.9.5" }
 serde =  { version = "*" }
 sqlparser=  { version = "*" }
+clap = { version = "4.5.4", features = ["derive"] }
 
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]
