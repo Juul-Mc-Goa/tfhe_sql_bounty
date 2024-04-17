@@ -5,6 +5,7 @@ use tfhe::integer::{ClientKey, IntegerCiphertext, RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
+use crate::encoding::{encode_signed, encode_string};
 use crate::EncryptedSyntaxTree;
 
 /// An enum with one variant for each possible type of a cell's content.
@@ -101,40 +102,17 @@ impl CellContent {
     /// Encode every cell content as a vector of `u64`s. In every cases other than
     /// `ShortString`, it has a length of 1.
     pub fn encode(&self) -> Vec<u64> {
-        // switch the MSB of signed integers so that
-        // switch_sign8(-1) < switch_sign8(1)
-        let switch_sign8 = |i: i8| (i as u64) ^ (1 << 31);
-        let switch_sign16 = |i: i16| (i as u64) ^ (1 << 31);
-        let switch_sign32 = |i: i32| (i as u64) ^ (1 << 31);
-        let switch_sign64 = |i: i64| (i as u64) ^ (1 << 31);
         match self {
             Self::Bool(b) => vec![*b as u64],
             Self::U8(u) => vec![*u as u64],
             Self::U16(u) => vec![*u as u64],
             Self::U32(u) => vec![*u as u64],
             Self::U64(u) => vec![*u as u64],
-            Self::I8(i) => vec![switch_sign8(*i)],
-            Self::I16(i) => vec![switch_sign16(*i)],
-            Self::I32(i) => vec![switch_sign32(*i)],
-            Self::I64(i) => vec![switch_sign64(*i)],
-            Self::ShortString(s) => {
-                let s_len = s.len();
-                let s_bytes = s.as_bytes();
-                let mut result: Vec<u64> = Vec::new();
-                let get_or_zero = |j: usize| (if j < s_len { s_bytes[j] } else { 0u8 }) as u64;
-                for i in 0..8 {
-                    let j = 4 * i;
-                    let (b0, b1, b2, b3) = (
-                        get_or_zero(j),
-                        get_or_zero(j + 1),
-                        get_or_zero(j + 2),
-                        get_or_zero(j + 3),
-                    );
-                    let u64_from_bytes = (b0 << 24) + (b1 << 16) + (b2 << 8) + b3;
-                    result.push(u64_from_bytes);
-                }
-                result
-            }
+            Self::I8(i) => vec![encode_signed(*i)],
+            Self::I16(i) => vec![encode_signed(*i)],
+            Self::I32(i) => vec![encode_signed(*i)],
+            Self::I64(i) => vec![encode_signed(*i)],
+            Self::ShortString(s) => encode_string(s.to_string()),
         }
     }
 }

@@ -277,6 +277,7 @@ mod query;
 mod simplify_query;
 mod tables;
 
+use encoding::decode_u64_string;
 use query::*;
 use tables::*;
 

@@ -168,6 +168,7 @@ impl CostFunction<QueryLanguage> for CostFn {
 }
 
 /// parse an expression, simplify it using egg, and pretty print it back out
+#[allow(dead_code)]
 pub fn simplify(s: &str) -> String {
     // parse the expression, the type annotation tells it which Language to use
     let expr: RecExpr<QueryLanguage> = s.parse().unwrap();
