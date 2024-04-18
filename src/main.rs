@@ -265,8 +265,11 @@
 //! for a full analysis.
 //! </div>
 
+use clap::Parser;
+use sqlparser::ast::{SetExpr, Statement};
 use std::path::PathBuf;
 use std::time::Instant;
+
 use tfhe::integer::gen_keys_radix;
 use tfhe::integer::{wopbs::WopbsKey, RadixClientKey, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
@@ -281,7 +284,18 @@ use encoding::decode_u64_string;
 use query::*;
 use tables::*;
 
-// fn encrypt_query(query: sqlparser::ast::Select) -> EncryptedQuery;
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    /// path to the database to load
+    input_db: PathBuf,
+    /// path to the query file
+    query_file: PathBuf,
+}
+
+fn encrypt_query(query: sqlparser::ast::Select, headers: &TableHeaders) -> EncryptedQuery {
+    let where_condition = U64SyntaxTree::from((query.selection.clone().unwrap(), headers));
+}
 
 /// # Inputs:
 /// - sks: The server key to use
@@ -353,19 +367,22 @@ fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey, WopbsParameters) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
     println!("KeyGen...");
     let (client_key, server_key, wopbs_key, wopbs_params) = generate_keys();
     println!("...done.");
 
-    let db_dir_path = "db_dir";
+    let db_dir_path = cli.input_db;
+    let query_path = cli.query_file;
+
     let tables = load_tables(db_dir_path.into(), server_key.clone(), wopbs_key.clone())
         .expect("Failed to load DB at {db_dir_path}");
     let (_, table) = tables.tables[0].clone();
     let headers = table.headers.clone();
 
-    let query_path = PathBuf::from("query.txt");
-    let query = build_u64_syntax_tree(parse_query(query_path), &headers);
-    println!("query: \n{}\n", query.to_string());
+    let query = better_parse_query(query_path, &headers);
+    println!("query: \n{query:?}\n");
 
     let timer = Instant::now();
     let encrypted_query = query.encrypt(client_key.as_ref());

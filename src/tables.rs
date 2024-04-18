@@ -375,11 +375,42 @@ impl<'a> TableQueryRunner<'a> {
     }
 }
 
+/// A list of pairs `(table_name, headers)`.
+pub struct DatabaseHeaders(pub Vec<(String, TableHeaders)>);
+
 /// A vector of tuples `(table_name, table)`, plus a `ServerKey` and a `WopbsKey`.
-pub struct Tables {
+pub struct Database {
     pub server_key: ServerKey,
     pub wopbs_key: WopbsKey,
     pub tables: Vec<(String, Table)>,
+}
+
+impl DatabaseHeaders {
+    pub fn table_index(&self, table_name: String) -> u8 {
+        for (i, (name, _)) in self.0.iter().enumerate() {
+            if name == &table_name {
+                return i as u8;
+            }
+        }
+        panic!(
+            "table {table_name} not found in: {:?}",
+            self.0.iter().map(|(name, _)| name).collect::<Vec<_>>()
+        )
+    }
+}
+
+impl Database {
+    pub fn table_index(&self, table_name: String) -> u8 {
+        for (i, (name, _)) in self.tables.iter().enumerate() {
+            if name == &table_name {
+                return i as u8;
+            }
+        }
+        panic!(
+            "table {table_name} not found in: {:?}",
+            self.tables.iter().map(|(name, _)| name).collect::<Vec<_>>()
+        )
+    }
 }
 
 /// Parse headers of a csv file.
@@ -413,7 +444,7 @@ pub fn load_tables(
     path: PathBuf,
     server_key: ServerKey,
     wopbs_key: WopbsKey,
-) -> Result<Tables, Box<dyn std::error::Error>> {
+) -> Result<Database, Box<dyn std::error::Error>> {
     let mut result: Vec<(String, Table)> = Vec::new();
     let db_path = fs::read_dir(path).expect("Database path error: can't read directory {path}");
     for table_file in db_path {
@@ -438,7 +469,7 @@ pub fn load_tables(
         }
         result.push((table_name, Table { headers, content }))
     }
-    Ok(Tables {
+    Ok(Database {
         server_key,
         wopbs_key,
         tables: result,
