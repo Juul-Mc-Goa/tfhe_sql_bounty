@@ -6,7 +6,9 @@
 use crate::encoding::*;
 use crate::{CellType, TableHeaders};
 
-use sqlparser::ast::{BinaryOperator, Expr, Ident, SetExpr, Statement, UnaryOperator, Value};
+use sqlparser::ast::{
+    BinaryOperator, Expr, Ident, SelectItem, SetExpr, Statement, TableFactor, UnaryOperator, Value,
+};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
@@ -45,6 +47,19 @@ pub enum U64SyntaxTree {
     Or(Box<U64SyntaxTree>, Box<U64SyntaxTree>),
     Nand(Box<U64SyntaxTree>, Box<U64SyntaxTree>),
     Nor(Box<U64SyntaxTree>, Box<U64SyntaxTree>),
+}
+
+/// A query of the form:
+/// ```
+/// SELECT <DISTINCT?> <column_selection> FROM <table_selection> WHERE
+/// <where_condition>
+/// ```
+#[derive(Clone, Debug)]
+pub struct ClearQuery {
+    distinct: bool,
+    column_selection: Vec<u8>,
+    table_selection: u8,
+    where_condition: U64SyntaxTree,
 }
 
 /// Holds a tuple `(is_node, left, which_op, right, negate)`. Each tuple represents
@@ -92,6 +107,22 @@ pub type EncryptedInstruction = (
 /// RadixCiphertext, CipherText)`, where each tuple represents either an `Atom`
 /// or a boolean operator (`AND`, `OR`, `NAND`, `NOR`).
 pub type EncryptedSyntaxTree = Vec<EncryptedInstruction>;
+
+/// An encrypted query of the form:
+/// ```
+/// SELECT <DISTINCT?> <column_selection> FROM <table_selection> WHERE
+/// <where_condition>
+/// ```
+pub struct EncryptedQuery {
+    /// An encrypted boolean
+    distinct: Ciphertext,
+    /// A list of encrypted column indices
+    column_selection: Vec<RadixCiphertext>,
+    /// The encrypted index of the table
+    table_selection: RadixCiphertext,
+    /// An encrypted where condition
+    where_condition: EncryptedSyntaxTree,
+}
 
 /// Translates a `BinaryOperator` from the crate `sqlparser` into a `ComparisonOp`.
 impl From<BinaryOperator> for ComparisonOp {
@@ -399,6 +430,25 @@ impl From<(Expr, &TableHeaders)> for U64SyntaxTree {
     }
 }
 
+impl ClearQuery {
+    pub fn encrypt(&self, client_key: &ClientKey) -> EncryptedQuery {
+        let distinct = client_key.encrypt_one_block(self.distinct as u64);
+        let column_selection: Vec<_> = self
+            .column_selection
+            .iter()
+            .map(|c| client_key.encrypt_radix(*c, 4))
+            .collect();
+        let table_selection = client_key.encrypt_radix(self.table_selection, 4);
+        let where_condition = self.where_condition.encrypt(&client_key);
+        EncryptedQuery {
+            distinct,
+            column_selection,
+            table_selection,
+            where_condition,
+        }
+    }
+}
+
 pub fn parse_query(path: PathBuf) -> Statement {
     let dialect = GenericDialect {};
     let str_query = read_to_string(path.clone()).expect(
@@ -410,6 +460,55 @@ pub fn parse_query(path: PathBuf) -> Statement {
     );
     let ast = Parser::parse_sql(&dialect, &str_query).unwrap();
     ast[0].clone()
+}
+
+pub fn better_parse_query(path: PathBuf, headers: &TableHeaders) -> ClearQuery {
+    let dialect = GenericDialect {};
+    let str_query = read_to_string(path.clone()).expect(
+        format!(
+            "Could not load query file at {}",
+            path.to_str().expect("invalid Unicode for {path:?}")
+        )
+        .as_str(),
+    );
+    let ast = Parser::parse_sql(&dialect, &str_query).unwrap();
+    let statement = ast[0].clone();
+    match statement {
+        Statement::Query(q) => match q.body.as_ref() {
+            SetExpr::Select(s) => {
+                let distinct = s.distinct.is_some();
+                let column_selection: Vec<u8> =
+                    if s.projection.iter().any(|select_item| match select_item {
+                        SelectItem::Wildcard(_) => true,
+                        _ => false,
+                    }) {
+                        vec![]
+                    } else {
+                        s.projection
+                            .iter()
+                            .map(|select_item| match select_item {
+                                SelectItem::UnnamedExpr(Expr::Identifier(id)) => id.value.clone(),
+                                se => panic!("unknown selection: {se:?}"),
+                            })
+                            .map(|column_id| headers.index_of(column_id).unwrap())
+                            .collect()
+                    };
+                let table_selection = match &s.from[0].relation {
+                    TableFactor::Table { name, .. } => name.0[0].value.clone(),
+                    t => panic!("not a table name {t:?}"),
+                };
+                let where_condition = U64SyntaxTree::from((s.selection.clone().unwrap(), headers));
+                ClearQuery {
+                    distinct,
+                    column_selection,
+                    table_selection,
+                    where_condition,
+                }
+            }
+            _ => panic!("unknown query: {q:?}"),
+        },
+        _ => panic!("unknown statement: {statement:?}"),
+    }
 }
 
 pub fn build_u64_syntax_tree(statement: Statement, headers: &TableHeaders) -> U64SyntaxTree {
