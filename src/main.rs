@@ -271,7 +271,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use tfhe::integer::gen_keys_radix;
-use tfhe::integer::{wopbs::WopbsKey, RadixClientKey, ServerKey};
+use tfhe::integer::{wopbs::WopbsKey, ClientKey, RadixClientKey, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 mod cipher_structs;
@@ -288,13 +288,19 @@ use tables::*;
 #[command(version, about, long_about = None)]
 struct Cli {
     /// path to the database to load
+    #[arg(long)]
     input_db: PathBuf,
     /// path to the query file
+    #[arg(long)]
     query_file: PathBuf,
 }
 
-fn encrypt_query(query: sqlparser::ast::Select, headers: &TableHeaders) -> EncryptedQuery {
-    let where_condition = U64SyntaxTree::from((query.selection.clone().unwrap(), headers));
+fn encrypt_query(
+    query: sqlparser::ast::Select,
+    client_key: &ClientKey,
+    headers: &DatabaseHeaders,
+) -> EncryptedQuery {
+    query::parse_query(query, headers).encrypt(client_key)
 }
 
 /// # Inputs:
@@ -373,19 +379,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (client_key, server_key, wopbs_key, wopbs_params) = generate_keys();
     println!("...done.");
 
+    // parse cli args
     let db_dir_path = cli.input_db;
     let query_path = cli.query_file;
 
-    let tables = load_tables(db_dir_path.into(), server_key.clone(), wopbs_key.clone())
+    // load db, parse query
+    let db = load_tables(db_dir_path.into(), server_key.clone(), wopbs_key.clone())
         .expect("Failed to load DB at {db_dir_path}");
-    let (_, table) = tables.tables[0].clone();
-    let headers = table.headers.clone();
+    let headers = db.headers();
+    let query = parse_query_from_file(query_path, &headers);
+    println!("query: \n{}\n", query.pretty());
 
-    let query = better_parse_query(query_path, &headers);
-    println!("query: \n{query:?}\n");
-
-    let timer = Instant::now();
-    let encrypted_query = query.encrypt(client_key.as_ref());
+    let (_, table) = db.tables[query.table_selection as usize].clone();
 
     let query_runner = TableQueryRunner::new(
         table,
@@ -395,7 +400,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         wopbs_params,
     );
 
-    let ct_result = query_runner.run_fhe_query(&encrypted_query);
+    let timer = Instant::now();
+    let encrypted_query = query.encrypt(client_key.as_ref());
+
+    let ct_result = query_runner.run_fhe_query(&encrypted_query.where_condition);
     let clear_result = ct_result
         .into_iter()
         .map(|ct_bool: Ciphertext| client_key.decrypt_one_block(&ct_bool))

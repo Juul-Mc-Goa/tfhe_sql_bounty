@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 use tfhe::integer::wopbs::WopbsKey;
@@ -294,12 +295,20 @@ impl<'a> TableQueryRunner<'a> {
         &self,
         entry: &Vec<u64>,
         query: &EncryptedSyntaxTree,
-        query_lut: &mut QueryLUT,
+        // query_lut: &mut QueryLUT,
     ) -> Ciphertext {
         println!("\n*** NEW ENTRY ***");
         let sk = self.server_key;
+        let inner_sk = self.server_key.clone().into_raw_parts();
+        let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
 
         let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key);
+        let mut query_lut: QueryLUT<'_> = QueryLUT::new(
+            query.len(),
+            &inner_sk,
+            &inner_wopbs,
+            self.wopbs_parameters.clone(),
+        );
 
         let new_fhe_bool = |ct: Ciphertext| FheBool { ct, server_key: sk };
         let mut result_bool = FheBool::encrypt_trivial(true, sk);
@@ -364,14 +373,25 @@ impl<'a> TableQueryRunner<'a> {
             &inner_wopbs,
             self.wopbs_parameters.clone(),
         );
-        let mut result: Vec<Ciphertext> = Vec::with_capacity(self.content.len());
+        // let mut result: Vec<Ciphertext> = Vec::with_capacity(self.content.len());
         // iterate through each entry
-        for entry in self.content.iter() {
-            result.push(self.run_query_on_entry(entry, query, &mut query_lut));
-            query_lut.flush();
-        }
+        // (0..self.content.len())
+        //     .collect::<Vec<usize>>()
+        //     .as_ref()
+        self.content
+            .par_iter()
+            .map(|entry| {
+                self.run_query_on_entry(entry, query)
+                // result.push(self.run_query_on_entry(entry, query));
+                // query_lut.flush();
+            })
+            .collect()
+        // for entry in self.content.iter() {
+        //     result.push(self.run_query_on_entry(entry, query, &mut query_lut));
+        //     query_lut.flush();
+        // }
 
-        result
+        // result
     }
 }
 
@@ -386,6 +406,7 @@ pub struct Database {
 }
 
 impl DatabaseHeaders {
+    /// Maps a table name to its index in the vector.
     pub fn table_index(&self, table_name: String) -> u8 {
         for (i, (name, _)) in self.0.iter().enumerate() {
             if name == &table_name {
@@ -400,6 +421,7 @@ impl DatabaseHeaders {
 }
 
 impl Database {
+    /// Maps a table name to its index in the vector.
     pub fn table_index(&self, table_name: String) -> u8 {
         for (i, (name, _)) in self.tables.iter().enumerate() {
             if name == &table_name {
@@ -409,6 +431,15 @@ impl Database {
         panic!(
             "table {table_name} not found in: {:?}",
             self.tables.iter().map(|(name, _)| name).collect::<Vec<_>>()
+        )
+    }
+    /// Outputs a list of table headers found in the database.
+    pub fn headers(&self) -> DatabaseHeaders {
+        DatabaseHeaders(
+            self.tables
+                .iter()
+                .map(|(s, t)| (s.clone(), t.headers.clone()))
+                .collect::<Vec<_>>(),
         )
     }
 }

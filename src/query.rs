@@ -3,7 +3,7 @@
 //! This module contains types for an internal representation of queries, as
 //! well as methods for encoding and encrypting them.
 
-use crate::encoding::*;
+use crate::{encoding::*, DatabaseHeaders};
 use crate::{CellType, TableHeaders};
 
 use sqlparser::ast::{
@@ -56,10 +56,10 @@ pub enum U64SyntaxTree {
 /// ```
 #[derive(Clone, Debug)]
 pub struct ClearQuery {
-    distinct: bool,
-    column_selection: Vec<u8>,
-    table_selection: u8,
-    where_condition: U64SyntaxTree,
+    pub distinct: bool,
+    pub column_selection: Vec<u8>,
+    pub table_selection: u8,
+    pub where_condition: U64SyntaxTree,
 }
 
 /// Holds a tuple `(is_node, left, which_op, right, negate)`. Each tuple represents
@@ -115,13 +115,13 @@ pub type EncryptedSyntaxTree = Vec<EncryptedInstruction>;
 /// ```
 pub struct EncryptedQuery {
     /// An encrypted boolean
-    distinct: Ciphertext,
+    pub distinct: Ciphertext,
     /// A list of encrypted column indices
-    column_selection: Vec<RadixCiphertext>,
+    pub column_selection: Vec<RadixCiphertext>,
     /// The encrypted index of the table
-    table_selection: RadixCiphertext,
+    pub table_selection: RadixCiphertext,
     /// An encrypted where condition
-    where_condition: EncryptedSyntaxTree,
+    pub where_condition: EncryptedSyntaxTree,
 }
 
 /// Translates a `BinaryOperator` from the crate `sqlparser` into a `ComparisonOp`.
@@ -390,6 +390,8 @@ impl U64SyntaxTree {
     }
 }
 
+/// Parses a `sqlparser::ast::Expr` into a `U64SyntaxTree`, using a
+/// `&TableHeaders` for converting column identifiers to `u8` indices.
 impl From<(Expr, &TableHeaders)> for U64SyntaxTree {
     fn from((expr, headers): (Expr, &TableHeaders)) -> Self {
         match expr {
@@ -431,6 +433,7 @@ impl From<(Expr, &TableHeaders)> for U64SyntaxTree {
 }
 
 impl ClearQuery {
+    /// Encrypts each of its attributes to build an [`EncryptedQuery`].
     pub fn encrypt(&self, client_key: &ClientKey) -> EncryptedQuery {
         let distinct = client_key.encrypt_one_block(self.distinct as u64);
         let column_selection: Vec<_> = self
@@ -447,22 +450,73 @@ impl ClearQuery {
             where_condition,
         }
     }
+
+    /// Pretty-printing
+    pub fn pretty(&self) -> String {
+        vec![
+            format!("ClearQuery:"),
+            format!("  distinct: {}", self.distinct),
+            format!("  column selection: {:?}", self.column_selection),
+            format!("  table selection: {}", self.table_selection),
+            format!("  where condition:"),
+            self.where_condition.to_string(),
+        ]
+        .join("\n")
+    }
 }
 
-pub fn parse_query(path: PathBuf) -> Statement {
-    let dialect = GenericDialect {};
-    let str_query = read_to_string(path.clone()).expect(
-        format!(
-            "Could not load query file at {}",
-            path.to_str().expect("invalid Unicode for {path:?}")
-        )
-        .as_str(),
-    );
-    let ast = Parser::parse_sql(&dialect, &str_query).unwrap();
-    ast[0].clone()
+/// Builds a [`ClearQuery`] from a `sqlparser::ast::Select`.
+pub fn parse_query(query: sqlparser::ast::Select, headers: &DatabaseHeaders) -> ClearQuery {
+    let distinct = query.distinct.is_some();
+
+    let table_name = match &query.from[0].relation {
+        TableFactor::Table { name, .. } => name.0[0].value.clone(),
+        t => panic!("not a table name {t:?}"),
+    };
+    let table_selection = headers.table_index(table_name);
+
+    let headers = headers.0[table_selection as usize].1.clone();
+    let column_selection: Vec<u8> =
+        if query
+            .projection
+            .iter()
+            .any(|select_item| match select_item {
+                SelectItem::Wildcard(_) => true,
+                _ => false,
+            })
+        {
+            vec![]
+        } else {
+            query
+                .projection
+                .iter()
+                .map(|select_item| match select_item {
+                    SelectItem::UnnamedExpr(Expr::Identifier(id)) => id.value.clone(),
+                    se => panic!("unknown selection: {se:?}"),
+                })
+                .map(|column_id| headers.index_of(column_id).unwrap())
+                .collect()
+        };
+
+    let where_condition = U64SyntaxTree::from((query.selection.clone().unwrap(), &headers));
+
+    ClearQuery {
+        distinct,
+        column_selection,
+        table_selection,
+        where_condition,
+    }
 }
 
-pub fn better_parse_query(path: PathBuf, headers: &TableHeaders) -> ClearQuery {
+/// Parses a query file specified by `path` into a `ClearQuery`.
+///
+/// # Inputs
+/// + `path`:  a `PathBuf` to the file containing the SQL query,
+/// + `headers`: a [`DatabaseHeaders`], ie a list of all table headers of a database.
+///
+/// # Output
+/// A [`ClearQuery`].
+pub fn parse_query_from_file(path: PathBuf, headers: &DatabaseHeaders) -> ClearQuery {
     let dialect = GenericDialect {};
     let str_query = read_to_string(path.clone()).expect(
         format!(
@@ -475,46 +529,7 @@ pub fn better_parse_query(path: PathBuf, headers: &TableHeaders) -> ClearQuery {
     let statement = ast[0].clone();
     match statement {
         Statement::Query(q) => match q.body.as_ref() {
-            SetExpr::Select(s) => {
-                let distinct = s.distinct.is_some();
-                let column_selection: Vec<u8> =
-                    if s.projection.iter().any(|select_item| match select_item {
-                        SelectItem::Wildcard(_) => true,
-                        _ => false,
-                    }) {
-                        vec![]
-                    } else {
-                        s.projection
-                            .iter()
-                            .map(|select_item| match select_item {
-                                SelectItem::UnnamedExpr(Expr::Identifier(id)) => id.value.clone(),
-                                se => panic!("unknown selection: {se:?}"),
-                            })
-                            .map(|column_id| headers.index_of(column_id).unwrap())
-                            .collect()
-                    };
-                let table_selection = match &s.from[0].relation {
-                    TableFactor::Table { name, .. } => name.0[0].value.clone(),
-                    t => panic!("not a table name {t:?}"),
-                };
-                let where_condition = U64SyntaxTree::from((s.selection.clone().unwrap(), headers));
-                ClearQuery {
-                    distinct,
-                    column_selection,
-                    table_selection,
-                    where_condition,
-                }
-            }
-            _ => panic!("unknown query: {q:?}"),
-        },
-        _ => panic!("unknown statement: {statement:?}"),
-    }
-}
-
-pub fn build_u64_syntax_tree(statement: Statement, headers: &TableHeaders) -> U64SyntaxTree {
-    match statement {
-        Statement::Query(q) => match q.body.as_ref() {
-            SetExpr::Select(s) => U64SyntaxTree::from((s.selection.clone().unwrap(), headers)),
+            SetExpr::Select(s) => parse_query(s.as_ref().clone(), headers),
             _ => panic!("unknown query: {q:?}"),
         },
         _ => panic!("unknown statement: {statement:?}"),
