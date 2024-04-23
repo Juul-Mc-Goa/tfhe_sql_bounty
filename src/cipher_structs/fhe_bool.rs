@@ -1,31 +1,26 @@
-use tfhe::core_crypto::algorithms::{
-    lwe_ciphertext_add_assign, lwe_linear_algebra::lwe_ciphertext_plaintext_add_assign,
-};
-use tfhe::core_crypto::entities::Plaintext;
-
-use tfhe::integer::{
-    BooleanBlock, IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, RadixClientKey,
-    ServerKey,
-};
-use tfhe::shortint::ciphertext::Degree;
+use tfhe::integer::{RadixCiphertext, RadixClientKey};
+use tfhe::shortint::ciphertext::NoiseLevel;
 use tfhe::shortint::Ciphertext;
+use tfhe::shortint::ServerKey;
 
 use std::ops::{Add, AddAssign, Mul, Not};
 
 /// A struct designed to compute the XOR and NOT gates without doing a PBS.
 ///
 /// It essentially uses that `a ^ b = (a + b) % 2`, where booleans are understood
-/// as elements of Z/2Z:
+/// as elements of $\mathbb{Z}/2\mathbb{Z}$:
 /// ```rust
 /// match boolean {
-///   true => 1,
+///   true  => 1,
 ///   false => 0,
 /// }
 /// ```
+///
+/// Uses a `shortint` server key for computations.
 #[derive(Clone)]
 pub struct FheBool<'a> {
     pub ct: Ciphertext,
-    pub server_key: &'a ServerKey,
+    pub server_key: &'a tfhe::shortint::ServerKey,
 }
 
 impl<'a> FheBool<'a> {
@@ -38,19 +33,67 @@ impl<'a> FheBool<'a> {
 
     pub fn encrypt_trivial(val: bool, server_key: &'a ServerKey) -> Self {
         Self {
-            ct: server_key.create_trivial_boolean_block(val).into_inner(),
+            ct: server_key.create_trivial(val as u64),
             server_key,
         }
     }
 
-    pub fn into_boolean_block(self) -> BooleanBlock {
-        let radix_ct = RadixCiphertext::from_blocks(vec![self.ct]);
-        BooleanBlock::new_unchecked(
-            self.server_key
-                .unchecked_scalar_bitand_parallelized(&radix_ct, 1)
-                .into_blocks()[0]
-                .clone(),
-        )
+    pub fn into_boolean(&mut self) {
+        self.server_key
+            .unchecked_scalar_bitand_assign(&mut self.ct, 1_u8)
+    }
+
+    // pub fn into_boolean_block(self) -> BooleanBlock {
+    //     let radix_ct = RadixCiphertext::from_blocks(vec![self.ct]);
+    //     BooleanBlock::new_unchecked(
+    //         self.server_key
+    //             .unchecked_scalar_bitand(&radix_ct, 1_u8)
+    //             .into_blocks()[0]
+    //             .clone(),
+    //     )
+    // }
+
+    /// Before doing an operations on 2 inputs which validity is described by
+    /// `is_operation_possible`, one or both the inputs may need to be cleaned
+    /// (noise reinitilization) with a PBS.
+    /// Among possible cleanings this functions returns one of the ones that has the lowest number
+    /// of PBS
+    ///
+    /// This is copy-pasted from
+    /// `tfhe::shortint::server_key::mod::binary_smart_op_optimal_cleaning_strategy`,
+    /// and modified to remove handling carries.
+    pub(crate) fn binary_smart_op_optimal_cleaning_strategy(
+        &self,
+        ct_left: &Ciphertext,
+        ct_right: &Ciphertext,
+        is_operation_possible: impl Fn(&ServerKey, NoiseLevel, NoiseLevel) -> bool + Copy,
+    ) -> Option<(bool, bool)> {
+        [false, true]
+            .into_iter()
+            .flat_map(move |bootstrap_left| {
+                let left_noise = if bootstrap_left {
+                    ct_left.noise_degree_if_bootstrapped().noise_level
+                } else {
+                    ct_left.noise_degree().noise_level
+                };
+
+                [false, true]
+                    .into_iter()
+                    .filter_map(move |bootstrap_right| {
+                        let right_noise = if bootstrap_right {
+                            ct_right.noise_degree_if_bootstrapped().noise_level
+                        } else {
+                            ct_right.noise_degree().noise_level
+                        };
+
+                        if is_operation_possible(&self.server_key, left_noise, right_noise) {
+                            Some((bootstrap_left, bootstrap_right))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .min_by_key(|(l, r)| usize::from(*l) + usize::from(*r))
     }
 }
 
@@ -60,17 +103,8 @@ impl<'a> FheBool<'a> {
 impl<'a, 'b> Not for &'b FheBool<'a> {
     type Output = FheBool<'a>;
     fn not(self) -> Self::Output {
-        let message_modulus = self.server_key.message_modulus().0;
-        let carry_modulus = self.server_key.carry_modulus().0;
-        let shift_plaintext = (1_u64 << 63) / (message_modulus * carry_modulus) as u64;
-        let encoded_scalar = Plaintext(shift_plaintext);
-
-        let mut ct_result = self.ct.clone();
-        lwe_ciphertext_plaintext_add_assign(&mut ct_result.ct, encoded_scalar);
-        ct_result.degree = Degree::new(ct_result.degree.get() + 1 as usize);
-
         FheBool {
-            ct: ct_result,
+            ct: self.server_key.unchecked_scalar_add(&self.ct, 1),
             server_key: &self.server_key,
         }
     }
@@ -81,20 +115,9 @@ impl<'a, 'b> Not for &'b FheBool<'a> {
 /// Uses that `!a = (a + 1) % 2`.
 impl<'a> Not for FheBool<'a> {
     type Output = FheBool<'a>;
-    fn not(self) -> Self::Output {
-        let message_modulus = self.server_key.message_modulus().0;
-        let carry_modulus = self.server_key.carry_modulus().0;
-        let shift_plaintext = (1_u64 << 63) / (message_modulus * carry_modulus) as u64;
-        let encoded_scalar = Plaintext(shift_plaintext);
-
-        let mut ct_result = self.ct;
-        lwe_ciphertext_plaintext_add_assign(&mut ct_result.ct, encoded_scalar);
-        ct_result.degree = Degree::new(ct_result.degree.get() + 1 as usize);
-
-        FheBool {
-            ct: ct_result,
-            server_key: &self.server_key,
-        }
+    fn not(mut self) -> Self::Output {
+        self.server_key.unchecked_scalar_add_assign(&mut self.ct, 1);
+        self
     }
 }
 
@@ -104,10 +127,28 @@ impl<'a> Not for FheBool<'a> {
 /// only be added using the `shortint` API, but we use the `integer` one.
 impl<'a, 'b> AddAssign<&'b FheBool<'a>> for FheBool<'a> {
     fn add_assign(&mut self, other: &'b FheBool<'a>) {
-        lwe_ciphertext_add_assign(&mut self.ct.ct, &other.ct.ct);
-        self.ct.degree = Degree::new(self.ct.degree.get() + other.ct.degree.get());
-        self.ct
-            .set_noise_level(self.ct.noise_level() + other.ct.noise_level());
+        // Only check for noise level because we only care about the residue mod 2
+        let (bootstrap_left, bootstrap_right) = self
+            .binary_smart_op_optimal_cleaning_strategy(&self.ct, &other.ct, |sk, a, b| {
+                sk.max_noise_level.validate(a + b).is_ok()
+            })
+            .unwrap();
+
+        if bootstrap_left {
+            self.server_key.message_extract_assign(&mut self.ct)
+        }
+
+        if bootstrap_right {
+            // can't mutate other so we clone it
+            let mut other_ct = other.ct.clone();
+            self.server_key.message_extract_assign(&mut other_ct);
+
+            self.server_key
+                .unchecked_add_assign(&mut self.ct, &other_ct);
+        }
+
+        self.server_key
+            .unchecked_add_assign(&mut self.ct, &other.ct);
     }
 }
 
@@ -137,18 +178,12 @@ impl<'a> Add<FheBool<'a>> for FheBool<'a> {
 
 /// Multiplies two `&FheBool`.
 ///
-/// Uses the `integer::ServerKey::boolean_bitand` method.
+/// Uses the `shortint::ServerKey::bitand` method.
 impl<'a, 'b, 'c> Mul<&'c FheBool<'a>> for &'b FheBool<'a> {
     type Output = FheBool<'a>;
     fn mul(self, other: &'c FheBool<'a>) -> FheBool<'a> {
         FheBool {
-            ct: self
-                .server_key
-                .boolean_bitand(
-                    &BooleanBlock::new_unchecked(self.ct.clone()),
-                    &BooleanBlock::new_unchecked(other.ct.clone()),
-                )
-                .into_inner(),
+            ct: self.server_key.bitand(&self.ct, &other.ct),
             server_key: self.server_key,
         }
     }
@@ -156,20 +191,12 @@ impl<'a, 'b, 'c> Mul<&'c FheBool<'a>> for &'b FheBool<'a> {
 
 /// Multiplies two `FheBool`.
 ///
-/// Uses the `integer::ServerKey::boolean_bitand` method.
+/// Uses the `shortint::ServerKey::bitand_assign` method.
 impl<'a> Mul<FheBool<'a>> for FheBool<'a> {
     type Output = FheBool<'a>;
-    fn mul(self, other: FheBool<'a>) -> FheBool<'a> {
-        FheBool {
-            ct: self
-                .server_key
-                .boolean_bitand(
-                    &BooleanBlock::new_unchecked(self.ct),
-                    &BooleanBlock::new_unchecked(other.ct),
-                )
-                .into_inner(),
-            server_key: self.server_key,
-        }
+    fn mul(mut self, other: FheBool<'a>) -> FheBool<'a> {
+        self.server_key.bitand_assign(&mut self.ct, &other.ct);
+        self
     }
 }
 
@@ -181,52 +208,37 @@ mod tests {
     #[test]
     fn add_two_fhe_bool() {
         let (ck, sk, _wopbs_key, _wopbs_params) = generate_keys();
-        let b1 = FheBool::encrypt(true, &ck, &sk);
-        let b2 = FheBool::encrypt(true, &ck, &sk);
+        let inner_sk = sk.clone().into_raw_parts();
+        let b1 = FheBool::encrypt(true, &ck, &inner_sk);
+        let b2 = FheBool::encrypt(true, &ck, &inner_sk);
 
         let xor = b1 + b2;
-        let clear_xor = ck.decrypt_bool(&xor.into_boolean_block());
+        let clear_xor = (ck.decrypt_one_block(&xor.ct) % 2) != 0;
         assert_eq!(clear_xor, false);
     }
 
     #[test]
     fn mul_two_fhe_bool() {
         let (ck, sk, _wopbs_key, _wopbs_params) = generate_keys();
-        let b1 = FheBool::encrypt(true, &ck, &sk);
-        let b2 = FheBool::encrypt(false, &ck, &sk);
+        let inner_sk = sk.clone().into_raw_parts();
+        let b1 = FheBool::encrypt(true, &ck, &inner_sk);
+        let b2 = FheBool::encrypt(true, &ck, &inner_sk);
 
         let and = b1 * b2;
-        let clear_and = ck.decrypt_bool(&and.into_boolean_block());
+        let clear_and = (ck.decrypt_one_block(&and.ct) % 2) != 0;
         assert_eq!(clear_and, false);
     }
 
     #[test]
     fn mix_two_fhe_bool() {
         let (ck, sk, _wopbs_key, _wopbs_params) = generate_keys();
-        let b1 = FheBool::encrypt(true, &ck, &sk);
-        let b2 = FheBool::encrypt(true, &ck, &sk);
+        let inner_sk = sk.clone().into_raw_parts();
+        let b1 = FheBool::encrypt(true, &ck, &inner_sk);
+        let b2 = FheBool::encrypt(true, &ck, &inner_sk);
 
         let xor = &b1 + &b2;
         let result = b1 * xor;
-        let clear_result = ck.decrypt_bool(&result.into_boolean_block());
+        let clear_result = (ck.decrypt_one_block(&result.ct) % 2) != 0;
         assert_eq!(clear_result, false);
     }
-
-    // #[test]
-    // fn update_lookup_table() {
-    //     let (ck, sk, wopbs_key, wopbs_params) = generate_keys();
-    //     let entry: Vec<u32> = vec![2, 3, 4, 5, 6];
-    //     let mut lut = EntryLUT::new(&entry, &sk, &wopbs_key, wopbs_params);
-
-    //     lut.update(1, 7);
-
-    //     // let lut_at_0 = apply_lut(&ck.as_ref().encrypt_radix(0u64, 4));
-    //     let lut_at_1 = lut.apply(&sk.create_trivial_radix(1u64, 4));
-    //     let lut_at_2 = lut.apply(&sk.create_trivial_radix(2u64, 4));
-    //     let clear1: u32 = ck.decrypt(&lut_at_1);
-    //     let clear2: u32 = ck.decrypt(&lut_at_2);
-
-    //     assert_eq!(clear1, 7);
-    //     assert_eq!(clear2, 4);
-    // }
 }

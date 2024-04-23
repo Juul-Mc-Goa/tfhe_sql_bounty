@@ -180,6 +180,7 @@ pub struct TableQueryRunner<'a> {
     pub content: Vec<Vec<u64>>,
     pub client_key: &'a ClientKey,
     pub server_key: &'a ServerKey,
+    pub shortint_server_key: tfhe::shortint::ServerKey,
     pub wopbs_key: &'a WopbsKey,
     pub wopbs_parameters: WopbsParameters,
 }
@@ -192,6 +193,7 @@ impl<'a> TableQueryRunner<'a> {
         wopbs_key: &'a WopbsKey,
         wopbs_parameters: WopbsParameters,
     ) -> Self {
+        let shortint_server_key = server_key.clone().into_raw_parts();
         Self {
             content: table
                 .content
@@ -200,6 +202,7 @@ impl<'a> TableQueryRunner<'a> {
                 .collect::<Vec<Vec<u64>>>(),
             client_key,
             server_key,
+            shortint_server_key,
             wopbs_key,
             wopbs_parameters,
         }
@@ -299,7 +302,7 @@ impl<'a> TableQueryRunner<'a> {
     ) -> Ciphertext {
         println!("\n*** NEW ENTRY ***");
         let sk = self.server_key;
-        let inner_sk = self.server_key.clone().into_raw_parts();
+        let inner_sk = &self.shortint_server_key;
         let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
 
         let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key);
@@ -310,8 +313,11 @@ impl<'a> TableQueryRunner<'a> {
             self.wopbs_parameters.clone(),
         );
 
-        let new_fhe_bool = |ct: Ciphertext| FheBool { ct, server_key: sk };
-        let mut result_bool = FheBool::encrypt_trivial(true, sk);
+        let new_fhe_bool = |ct: Ciphertext| FheBool {
+            ct,
+            server_key: inner_sk,
+        };
+        let mut result_bool = FheBool::encrypt_trivial(true, inner_sk);
 
         let is_lt = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
             new_fhe_bool(sk.lt_parallelized(a, b).into_inner())
@@ -364,34 +370,10 @@ impl<'a> TableQueryRunner<'a> {
     }
 
     pub fn run_fhe_query(&self, query: &EncryptedSyntaxTree) -> Vec<Ciphertext> {
-        let inner_sk = self.server_key.clone().into_raw_parts();
-        let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
-
-        let mut query_lut: QueryLUT<'_> = QueryLUT::new(
-            query.len(),
-            &inner_sk,
-            &inner_wopbs,
-            self.wopbs_parameters.clone(),
-        );
-        // let mut result: Vec<Ciphertext> = Vec::with_capacity(self.content.len());
-        // iterate through each entry
-        // (0..self.content.len())
-        //     .collect::<Vec<usize>>()
-        //     .as_ref()
         self.content
             .par_iter()
-            .map(|entry| {
-                self.run_query_on_entry(entry, query)
-                // result.push(self.run_query_on_entry(entry, query));
-                // query_lut.flush();
-            })
+            .map(|entry| self.run_query_on_entry(entry, query))
             .collect()
-        // for entry in self.content.iter() {
-        //     result.push(self.run_query_on_entry(entry, query, &mut query_lut));
-        //     query_lut.flush();
-        // }
-
-        // result
     }
 }
 
