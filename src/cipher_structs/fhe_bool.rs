@@ -17,7 +17,7 @@ use std::ops::{Add, AddAssign, Mul, Not};
 /// }
 /// ```
 ///
-/// Uses a `shortint` server key for computations.
+/// Needs a `shortint` server key for computations.
 #[derive(Clone)]
 pub struct FheBool<'a> {
     pub ct: Ciphertext,
@@ -51,8 +51,8 @@ impl<'a> FheBool<'a> {
     /// Before doing an operations on 2 inputs which validity is described by
     /// `is_operation_possible`, one or both the inputs may need to be cleaned
     /// (noise reinitilization) with a PBS.
-    /// Among possible cleanings this functions returns one of the ones that has the lowest number
-    /// of PBS
+    /// Among possible cleanings this functions returns one of the ones that has
+    /// the lowest number of PBS.
     ///
     /// This is copy-pasted from
     /// `tfhe::shortint::server_key::mod::binary_smart_op_optimal_cleaning_strategy`,
@@ -163,6 +163,30 @@ impl<'a, 'b, 'c> Add<&'c FheBool<'a>> for &'b FheBool<'a> {
 /// Used to XOR two booleans without doing a PBS.
 ///
 /// Redirects to the `AddAssign` implementation.
+impl<'a, 'b> Add<FheBool<'a>> for &'b FheBool<'a> {
+    type Output = FheBool<'a>;
+    fn add(self, other: FheBool<'a>) -> FheBool<'a> {
+        let mut result = self.clone();
+        result += &other;
+        result
+    }
+}
+
+/// Used to XOR two booleans without doing a PBS.
+///
+/// Redirects to the `AddAssign` implementation.
+impl<'a, 'c> Add<&'c FheBool<'a>> for FheBool<'a> {
+    type Output = FheBool<'a>;
+    fn add(self, other: &'c FheBool<'a>) -> FheBool<'a> {
+        let mut result = self.clone();
+        result += other;
+        result
+    }
+}
+
+/// Used to XOR two booleans without doing a PBS.
+///
+/// Redirects to the `AddAssign` implementation.
 impl<'a> Add<FheBool<'a>> for FheBool<'a> {
     type Output = FheBool<'a>;
     fn add(self, other: FheBool<'a>) -> FheBool<'a> {
@@ -185,14 +209,33 @@ impl<'a, 'b, 'c> Mul<&'c FheBool<'a>> for &'b FheBool<'a> {
     }
 }
 
+/// Multiplies `&FheBool` with `FheBool`.
+///
+/// Redirects to the `&FheBool` implementation.
+impl<'a, 'b> Mul<FheBool<'a>> for &'b FheBool<'a> {
+    type Output = FheBool<'a>;
+    fn mul(self, other: FheBool<'a>) -> FheBool<'a> {
+        self * &other
+    }
+}
+
+/// Multiplies `FheBool` with `&FheBool`.
+///
+/// Redirects to the `&FheBool` implementation.
+impl<'a, 'c> Mul<&'c FheBool<'a>> for FheBool<'a> {
+    type Output = FheBool<'a>;
+    fn mul(self, other: &'c FheBool<'a>) -> FheBool<'a> {
+        &self * other
+    }
+}
+
 /// Multiplies two `FheBool`.
 ///
-/// Uses the `shortint::ServerKey::bitand_assign` method.
+/// Redirects to the `&FheBool` implementation.
 impl<'a> Mul<FheBool<'a>> for FheBool<'a> {
     type Output = FheBool<'a>;
-    fn mul(mut self, other: FheBool<'a>) -> FheBool<'a> {
-        self.server_key.bitand_assign(&mut self.ct, &other.ct);
-        self
+    fn mul(self, other: FheBool<'a>) -> FheBool<'a> {
+        &self * &other
     }
 }
 

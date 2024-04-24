@@ -62,7 +62,7 @@ impl<'a> TableQueryRunner<'a> {
             let true_case =
                 self.recursive_cmux_distinct(index, second_proj, &projection[1..], result);
             // cmux(projection[0], true_case, false_case)
-            &false_case + &(&projection[0] * &(&true_case + &false_case))
+            &false_case + &projection[0] * (true_case + &false_case)
         }
     }
 

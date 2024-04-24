@@ -354,9 +354,9 @@ impl<'a> TableQueryRunner<'a> {
             let atom_right = new_fhe_bool(query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4)));
 
             result_bool = is_node
-                * (&(&atom_left * &atom_right)
+                * (&atom_left * &atom_right
                     + &is_eq
-                    + &which_op * &(&(atom_left + atom_right) + &is_lt))
+                    + &which_op * (atom_left + atom_right + &is_lt))
                 + is_eq
                 + which_op * is_lt
                 + negate;
