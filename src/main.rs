@@ -266,7 +266,6 @@
 //! </div>
 
 use clap::Parser;
-use sqlparser::ast::{SetExpr, Statement};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -275,6 +274,7 @@ use tfhe::integer::{wopbs::WopbsKey, ClientKey, RadixClientKey, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 mod cipher_structs;
+mod distinct;
 mod encoding;
 mod query;
 mod simplify_query;

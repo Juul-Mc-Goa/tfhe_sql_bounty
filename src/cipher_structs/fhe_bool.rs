@@ -1,8 +1,9 @@
-use tfhe::integer::{RadixCiphertext, RadixClientKey};
+use tfhe::integer::RadixClientKey;
 use tfhe::shortint::ciphertext::NoiseLevel;
 use tfhe::shortint::Ciphertext;
 use tfhe::shortint::ServerKey;
 
+use std::iter::Sum;
 use std::ops::{Add, AddAssign, Mul, Not};
 
 /// A struct designed to compute the XOR and NOT gates without doing a PBS.
@@ -24,6 +25,7 @@ pub struct FheBool<'a> {
 }
 
 impl<'a> FheBool<'a> {
+    /// Encrypts a boolean with the given client key.
     pub fn encrypt(val: bool, client_key: &'a RadixClientKey, server_key: &'a ServerKey) -> Self {
         Self {
             ct: client_key.encrypt_bool(val).into_inner(),
@@ -31,6 +33,7 @@ impl<'a> FheBool<'a> {
         }
     }
 
+    /// Trivially encrypts a boolean.
     pub fn encrypt_trivial(val: bool, server_key: &'a ServerKey) -> Self {
         Self {
             ct: server_key.create_trivial(val as u64),
@@ -38,20 +41,12 @@ impl<'a> FheBool<'a> {
         }
     }
 
+    /// A `FheBool` may not be an encryption of `0` or `1`. This method mutates
+    /// such a `FheBool` by taking its residue mod 2.
     pub fn into_boolean(&mut self) {
         self.server_key
             .unchecked_scalar_bitand_assign(&mut self.ct, 1_u8)
     }
-
-    // pub fn into_boolean_block(self) -> BooleanBlock {
-    //     let radix_ct = RadixCiphertext::from_blocks(vec![self.ct]);
-    //     BooleanBlock::new_unchecked(
-    //         self.server_key
-    //             .unchecked_scalar_bitand(&radix_ct, 1_u8)
-    //             .into_blocks()[0]
-    //             .clone(),
-    //     )
-    // }
 
     /// Before doing an operations on 2 inputs which validity is described by
     /// `is_operation_possible`, one or both the inputs may need to be cleaned
@@ -123,8 +118,9 @@ impl<'a> Not for FheBool<'a> {
 
 /// Used to XOR two booleans without doing a PBS.
 ///
-/// Copy/pasted from `tfhe::shortint::server_key::add.rs`. `Ciphertexts` can
-/// only be added using the `shortint` API, but we use the `integer` one.
+/// Copy/pasted from `tfhe::shortint::server_key::add.rs`. Modifies the checks
+/// to remove those about the carry bits: uses the custom method
+/// [`FheBool::binary_smart_op_optimal_cleaning_strategy`].
 impl<'a, 'b> AddAssign<&'b FheBool<'a>> for FheBool<'a> {
     fn add_assign(&mut self, other: &'b FheBool<'a>) {
         // Only check for noise level because we only care about the residue mod 2
