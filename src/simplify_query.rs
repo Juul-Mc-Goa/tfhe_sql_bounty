@@ -184,8 +184,7 @@ pub fn simplify(s: &str) -> String {
 
     // use an Extractor to pick the best element of the root eclass
     let extractor = Extractor::new(&runner.egraph, CostFn);
-    let (best_cost, best) = extractor.find_best(root);
-    println!("Simplified {} to {} with cost {}", expr, best, best_cost);
+    let (_, best) = extractor.find_best(root);
     best.to_string()
 }
 
@@ -303,8 +302,7 @@ impl U64SyntaxTree {
 
         // use an Extractor to pick the best element
         let extractor = Extractor::new(&runner.egraph, CostFn);
-        let (best_cost, best) = extractor.find_best(root);
-        println!("Simplified {} to {} with cost {}", expr, best, best_cost);
+        let (_, best) = extractor.find_best(root);
         Self::from_recexpr(best)
     }
 }

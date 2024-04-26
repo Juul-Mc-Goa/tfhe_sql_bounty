@@ -1,1 +1,1 @@
-SELECT * FROM table_1 WHERE (some_str = 'some other line')
+SELECT DISTINCT some_int FROM table_1 WHERE (some_bool = true)

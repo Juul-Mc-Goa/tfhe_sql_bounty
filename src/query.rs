@@ -3,6 +3,7 @@
 //! This module contains types for an internal representation of queries, as
 //! well as methods for encoding and encrypting them.
 
+use crate::cipher_structs::FheBool;
 use crate::{encoding::*, DatabaseHeaders};
 use crate::{CellType, TableHeaders};
 
@@ -15,7 +16,7 @@ use sqlparser::parser::Parser;
 use std::{fs::read_to_string, path::PathBuf};
 
 use tfhe::integer::{ClientKey, RadixCiphertext};
-use tfhe::shortint::Ciphertext;
+use tfhe::shortint::{Ciphertext, ServerKey};
 
 /// Contains one variant for each operator allowed in a `WHERE` expression.
 #[derive(Clone, Debug)]
@@ -57,7 +58,7 @@ pub enum U64SyntaxTree {
 #[derive(Clone, Debug)]
 pub struct ClearQuery {
     pub distinct: bool,
-    pub column_selection: Vec<u8>,
+    pub projection: Vec<bool>,
     pub table_selection: u8,
     pub where_condition: U64SyntaxTree,
 }
@@ -113,11 +114,11 @@ pub type EncryptedSyntaxTree = Vec<EncryptedInstruction>;
 /// SELECT <DISTINCT?> <column_selection> FROM <table_selection> WHERE
 /// <where_condition>
 /// ```
-pub struct EncryptedQuery {
+pub struct EncryptedQuery<'a> {
     /// An encrypted boolean
-    pub distinct: Ciphertext,
+    pub distinct: FheBool<'a>,
     /// A list of encrypted column indices
-    pub column_selection: Vec<RadixCiphertext>,
+    pub projection: Vec<FheBool<'a>>,
     /// The encrypted index of the table
     pub table_selection: RadixCiphertext,
     /// An encrypted where condition
@@ -434,18 +435,28 @@ impl From<(Expr, &TableHeaders)> for U64SyntaxTree {
 
 impl ClearQuery {
     /// Encrypts each of its attributes to build an [`EncryptedQuery`].
-    pub fn encrypt(&self, client_key: &ClientKey) -> EncryptedQuery {
-        let distinct = client_key.encrypt_one_block(self.distinct as u64);
-        let column_selection: Vec<_> = self
-            .column_selection
+    pub fn encrypt<'a>(
+        &self,
+        client_key: &'a ClientKey,
+        server_key: &'a ServerKey,
+    ) -> EncryptedQuery<'a> {
+        let distinct = FheBool {
+            ct: client_key.encrypt_one_block(self.distinct as u64),
+            server_key,
+        };
+        let projection: Vec<_> = self
+            .projection
             .iter()
-            .map(|c| client_key.encrypt_radix(*c, 4))
+            .map(|c| FheBool {
+                ct: client_key.encrypt_one_block(*c as u64),
+                server_key,
+            })
             .collect();
         let table_selection = client_key.encrypt_radix(self.table_selection, 4);
         let where_condition = self.where_condition.encrypt(&client_key);
         EncryptedQuery {
             distinct,
-            column_selection,
+            projection,
             table_selection,
             where_condition,
         }
@@ -456,7 +467,7 @@ impl ClearQuery {
         vec![
             format!("ClearQuery:"),
             format!("  distinct: {}", self.distinct),
-            format!("  column selection: {:?}", self.column_selection),
+            format!("  column selection: {:?}", self.projection),
             format!("  table selection: {}", self.table_selection),
             format!("  where condition:"),
             self.where_condition.to_string(),
@@ -476,33 +487,43 @@ pub fn parse_query(query: sqlparser::ast::Select, headers: &DatabaseHeaders) -> 
     let table_selection = headers.table_index(table_name);
 
     let headers = headers.0[table_selection as usize].1.clone();
-    let column_selection: Vec<u8> =
-        if query
-            .projection
-            .iter()
-            .any(|select_item| match select_item {
-                SelectItem::Wildcard(_) => true,
-                _ => false,
-            })
-        {
-            vec![]
-        } else {
-            query
-                .projection
-                .iter()
-                .map(|select_item| match select_item {
-                    SelectItem::UnnamedExpr(Expr::Identifier(id)) => id.value.clone(),
-                    se => panic!("unknown selection: {se:?}"),
-                })
-                .map(|column_id| headers.index_of(column_id).unwrap())
-                .collect()
-        };
 
-    let where_condition = U64SyntaxTree::from((query.selection.clone().unwrap(), &headers));
+    let mut projection: Vec<bool> = vec![false; headers.len()];
+
+    if query.projection.is_empty() {
+        panic!("Query with empty selection");
+    } else if let SelectItem::Wildcard(_) = query.projection[0] {
+        projection.iter_mut().for_each(|p| {
+            *p = true;
+        });
+    } else {
+        for select_item in query.projection {
+            match select_item {
+                SelectItem::UnnamedExpr(Expr::Identifier(id)) => {
+                    let ident = id.value.clone();
+                    let index = headers
+                        .index_of(ident.clone())
+                        .expect("Column identifier {ident} does not exist");
+                    let len = headers.type_of(ident).unwrap().len();
+
+                    let (start, end) = (index as usize, (index as usize) + len);
+                    projection[start..end].iter_mut().for_each(|p| {
+                        *p = true;
+                    });
+                }
+                _ => panic!("unknown selection: {select_item:?}"),
+            }
+        }
+    }
+
+    let where_condition = match query.selection {
+        Some(selection) => U64SyntaxTree::from((selection.clone(), &headers)),
+        None => U64SyntaxTree::True,
+    };
 
     ClearQuery {
         distinct,
-        column_selection,
+        projection,
         table_selection,
         where_condition,
     }

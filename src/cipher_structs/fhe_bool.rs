@@ -3,7 +3,6 @@ use tfhe::shortint::ciphertext::NoiseLevel;
 use tfhe::shortint::Ciphertext;
 use tfhe::shortint::ServerKey;
 
-use std::iter::Sum;
 use std::ops::{Add, AddAssign, Mul, Not};
 
 /// A struct designed to compute the XOR and NOT gates without doing a PBS.
@@ -57,7 +56,7 @@ impl<'a> FheBool<'a> {
     /// This is copy-pasted from
     /// `tfhe::shortint::server_key::mod::binary_smart_op_optimal_cleaning_strategy`,
     /// and modified to remove handling carries.
-    pub(crate) fn binary_smart_op_optimal_cleaning_strategy(
+    pub fn binary_smart_op_optimal_cleaning_strategy(
         &self,
         ct_left: &Ciphertext,
         ct_right: &Ciphertext,
@@ -136,15 +135,16 @@ impl<'a, 'b> AddAssign<&'b FheBool<'a>> for FheBool<'a> {
 
         if bootstrap_right {
             // can't mutate other so we clone it
-            let mut other_ct = other.ct.clone();
-            self.server_key.message_extract_assign(&mut other_ct);
+            let mut bootstrapped_other = other.ct.clone();
+            self.server_key
+                .message_extract_assign(&mut bootstrapped_other);
 
             self.server_key
-                .unchecked_add_assign(&mut self.ct, &other_ct);
+                .unchecked_add_assign(&mut self.ct, &bootstrapped_other);
+        } else {
+            self.server_key
+                .unchecked_add_assign(&mut self.ct, &other.ct);
         }
-
-        self.server_key
-            .unchecked_add_assign(&mut self.ct, &other.ct);
     }
 }
 

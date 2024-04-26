@@ -1,21 +1,7 @@
 use crate::{cipher_structs::FheBool, tables::TableQueryRunner};
 
 impl<'a> TableQueryRunner<'a> {
-    /// Given:
-    /// * `index`: an index
-    /// * `projection`: a list of clear booleans encoding which columns are
-    /// selected by that query,
-    /// * `result`: a list of encrypted booleans encoding which entries are
-    /// selected by a `SELECT` query,
-    ///
-    /// Returns the sum of all encrypted booleans `result[i]` such that for all `j`, we have
-    /// `projection[j] = true => result[index][j] = result[i][j]`.
-    fn sum_same_projection(
-        &'a self,
-        index: u8,
-        projection: Vec<bool>,
-        result: &[FheBool<'a>],
-    ) -> FheBool<'a> {
+    pub fn find_same_projection(&'a self, index: u8, projection: Vec<bool>) -> Vec<u8> {
         let index = index as usize;
         self.content
             .iter()
@@ -27,7 +13,28 @@ impl<'a> TableQueryRunner<'a> {
                     // projection[j] = true => cell = content[index][j]
                     .all(|(j, cell)| !projection[j] || *cell == self.content[index][j])
             })
-            .map(|(i, _)| &result[i])
+            .map(|(i, _)| i as u8)
+            .collect()
+    }
+
+    /// Given:
+    /// * `index`: an index
+    /// * `projection`: a list of clear booleans encoding which columns are
+    /// selected by that query,
+    /// * `result`: a list of encrypted booleans encoding which entries are
+    /// selected by a `SELECT` query,
+    ///
+    /// Returns the sum of all encrypted booleans `result[i]` such that for all `j`, we have
+    /// `projection[j] = true => self.content[index][j] = self.content[i][j]`.
+    fn sum_same_projection(
+        &'a self,
+        index: u8,
+        projection: Vec<bool>,
+        result: &[FheBool<'a>],
+    ) -> FheBool<'a> {
+        self.find_same_projection(index, projection)
+            .into_iter()
+            .map(|i| &result[i as usize])
             .fold(
                 FheBool::encrypt_trivial(false, &self.shortint_server_key),
                 move |a, b| &a + b,
@@ -118,13 +125,13 @@ impl<'a> TableQueryRunner<'a> {
             vec![FheBool::encrypt_trivial(false, &self.shortint_server_key); n];
 
         for (i, result_bool) in result.iter().enumerate() {
-            compliant_result[i] = result_bool.clone();
+            let is_in_result =
+                self.is_entry_already_in_result(i as u8, projection, &compliant_result);
 
-            // make_false = distinct AND self.is_entry_already_in_result(...)
-            let make_false =
-                distinct * &self.is_entry_already_in_result(i as u8, projection, &compliant_result);
+            // make_false = distinct AND is_in_result
+            let make_false = distinct * &is_in_result;
 
-            compliant_result[i] = &compliant_result[i] * &!make_false;
+            compliant_result[i] = result_bool * &!make_false;
         }
 
         compliant_result
