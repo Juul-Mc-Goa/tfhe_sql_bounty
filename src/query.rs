@@ -251,6 +251,14 @@ impl U64SyntaxTree {
         }
     }
 
+    pub fn do_negation(self, negate: bool) -> Self {
+        if negate {
+            self.negate()
+        } else {
+            self
+        }
+    }
+
     fn from_string(index: u8, op: ComparisonOp, s: String) -> Self {
         let values = encode_string(s);
         let mut result = Self::Atom(U64Atom {
@@ -402,6 +410,48 @@ impl From<(Expr, &TableHeaders)> for U64SyntaxTree {
                 expr: e,
             } => Self::from((e.as_ref().to_owned(), headers)).negate(),
             Expr::UnaryOp { op, .. } => panic!("unknown unary operator {op:?}"),
+            Expr::InList {
+                expr,
+                list,
+                negated,
+            } => {
+                let mut result = Self::False;
+                for e in list {
+                    let right_leg = Expr::BinaryOp {
+                        left: expr.clone(),
+                        op: BinaryOperator::Eq,
+                        right: Box::new(e),
+                    };
+                    result = Self::Or(Box::new(result), Box::new(Self::from((right_leg, headers))));
+                }
+                result.do_negation(negated)
+            }
+            Expr::Between {
+                expr,
+                negated,
+                low,
+                high,
+            } => {
+                let left_leg = Expr::BinaryOp {
+                    left: expr.clone(),
+                    op: BinaryOperator::GtEq,
+                    right: low,
+                };
+                let right_leg = Expr::BinaryOp {
+                    left: expr,
+                    op: BinaryOperator::LtEq,
+                    right: high,
+                };
+                let result = Self::from((
+                    Expr::BinaryOp {
+                        left: Box::new(left_leg),
+                        op: BinaryOperator::And,
+                        right: Box::new(right_leg),
+                    },
+                    headers,
+                ));
+                result.do_negation(negated)
+            }
             Expr::BinaryOp {
                 ref left,
                 ref op,
