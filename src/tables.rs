@@ -304,7 +304,6 @@ impl<'a> TableQueryRunner<'a> {
         query: &EncryptedSyntaxTree,
         // query_lut: &mut QueryLUT,
     ) -> FheBool {
-        println!("\n*** NEW ENTRY ***");
         let sk = self.server_key;
         let inner_sk = &self.shortint_server_key;
         let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
@@ -336,13 +335,8 @@ impl<'a> TableQueryRunner<'a> {
             return result_bool;
         }
 
-        // let decrypt_bool = |ct: &FheBool| self.client_key.decrypt_one_block(&ct.ct);
-        // let decrypt_radix = |ct: &RadixCiphertext| self.client_key.decrypt_radix::<u64>(ct);
-
         // else, loop through all atoms
         for (index, (is_node, left, which_op, right, negate)) in query.iter().enumerate() {
-            println!("atom n°{index}...");
-
             let (is_node, which_op, negate) = (
                 new_fhe_bool(is_node.clone()),
                 new_fhe_bool(which_op.clone()),
@@ -365,14 +359,16 @@ impl<'a> TableQueryRunner<'a> {
                 + which_op * is_lt
                 + negate;
 
-            // enforce that result_bool encrypts either 0 or 1
-            // result_bool = new_fhe_bool(result_bool.into_boolean_block().into_inner());
-
             query_lut.update(index as u8, result_bool.ct.clone());
         }
         result_bool
     }
 
+    /// Runs an encrypted SQL query on a clear table.
+    ///
+    /// For each table entry, computes (in parallel) if it is present in the
+    /// result, ignoring the optional `DISTINCT` flag. Then process the result
+    /// to comply with that flag.
     pub fn run_fhe_query(&'a self, query: &'a EncryptedQuery) -> Vec<FheBool> {
         let tmp_result: Vec<FheBool> = self
             .content
