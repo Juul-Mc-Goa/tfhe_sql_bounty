@@ -22,7 +22,7 @@ define_language! {
         // operators to handle constants
         "min" = Min([Id; 2]),
         "max" = Max([Id; 2]),
-        "pred" = Pred(Id),
+        "pred" = Pred(Id), // pred(a) = a.saturating_sub(1)
 
         Symbol(Symbol),
     }
@@ -55,6 +55,7 @@ pub fn rules() -> Vec<Rewrite> {
     rules.push(rw!("and-false"; "(AND ?x false)" => "false"));
     rules.push(rw!("and-excluded-mid"; "(AND ?x (NOT ?x))" => "false"));
     rules.append(&mut rw!("and-true"; "(AND ?x true)" <=> "?x"));
+    rules.push(rw!("and-false"; "(AND ?x false)" => "false"));
     rules.append(&mut rw!("associate-and"; "(AND ?x (AND ?y ?z))" <=> "(AND (AND ?x ?y) ?z)"));
     rules.append(&mut rw!("commute-and"; "(AND ?x ?y)" <=> "(AND ?y ?x)"));
     rules.append(&mut rw!("idempotent-and"; "(AND ?x ?x)" <=> "?x"));
@@ -73,7 +74,9 @@ pub fn rules() -> Vec<Rewrite> {
         &mut rw!("distribute-and"; "(OR ?x (AND ?y ?z))" <=> "(AND (OR ?x ?y) (OR ?x ?z))"),
     );
     rules.append(&mut rw!("de-morgan"; "(NOT (AND ?x ?y))" <=> "(OR (NOT ?x) (NOT ?y))"));
-    // atom rules
+    rules.push(rw!("trivial-and-or"; "(AND ?x (OR ?x ?y))" => "?x"));
+    rules.push(rw!("trivial-or-and"; "(OR ?x (AND ?x ?y))" => "?x"));
+
     rules.push(
         rw!("exclusive-eq"; "(AND (= ?x ?y) (= ?x ?z))" => "false" if are_not_equal("?y", "?z")),
     );
