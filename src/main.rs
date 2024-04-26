@@ -450,7 +450,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to load DB at {db_dir_path}");
     let headers = db.headers();
     let query = parse_query_from_file(query_path, &headers);
-    println!("query: \n{}\n", query.pretty());
+    println!("\n{}\n", query.pretty());
 
     let (_, table) = db.tables[query.table_selection as usize].clone();
 

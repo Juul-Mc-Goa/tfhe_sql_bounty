@@ -1,1 +1,1 @@
-SELECT DISTINCT some_int FROM table_1 WHERE (some_bool = true)
+SELECT DISTINCT some_int FROM table_1 WHERE some_int NOT BETWEEN 2 AND 5
