@@ -29,6 +29,7 @@ use tfhe::shortint::{
 use tfhe::integer::IntegerCiphertext;
 
 use super::recursive_cmux_tree::*;
+use super::FheBool;
 // use super::regular_cmux_tree::*;
 
 /// An updatable lookup table, that holds the intermediary `FheBool`s used when
@@ -66,6 +67,7 @@ impl<'a> QueryLUT<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn flush(&mut self) {
         self.lut.as_mut().fill(u64::ZERO);
     }
@@ -73,7 +75,7 @@ impl<'a> QueryLUT<'a> {
     /// Perform table lookup with argument `index` an encrypted `u8`.
     ///
     /// Returns an encryption of a boolean, of type `Ciphertext`.
-    pub fn apply<'b, T>(&self, index: &'b T) -> Ciphertext
+    pub fn apply<'b, 'c, T>(&'b self, index: &'b T, server_key: &'c ServerKey) -> FheBool<'c>
     where
         T: IntegerCiphertext,
         &'b [Ciphertext]: IntoParallelIterator<Item = &'b Ciphertext>,
@@ -90,11 +92,15 @@ impl<'a> QueryLUT<'a> {
         let ct = T::from_blocks(blocks);
         let ct_res = self.wopbs(&ct);
 
-        self.wopbs_key.keyswitch_to_pbs_params(&ct_res)
+        FheBool {
+            ct: self.wopbs_key.keyswitch_to_pbs_params(&ct_res),
+            server_key,
+        }
     }
 
     /// Updates a lookup table at the given index.
-    pub fn update(&mut self, index: u8, value: Ciphertext) {
+    pub fn update(&mut self, index: u8, value: &FheBool) {
+        let value = &value.ct;
         let index = index as usize;
 
         // keyswitch to wopbs

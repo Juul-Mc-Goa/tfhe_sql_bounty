@@ -242,66 +242,42 @@ impl<'a> TableQueryRunner<'a> {
     ///   | if is_node: node_bool XOR negate
     ///   | else:       atom_bool XOR negate
     /// node_bool:
-    ///   | if which_op: atom_left OR  atom_right
-    ///   | else:        atom_left AND atom_right
+    ///   | if which_op: node_left OR  node_right
+    ///   | else:        node_left AND node_right
     /// atom_bool:
     ///   | if which_op: val_left <= val_right
     ///   | else:        val_left == val_right
     /// ```
-    /// and translate these definition into boolean formulas:
+    /// and write the formula for a cmux using `+,*`:
     /// ```
-    /// result_bool = (is_node  AND node_bool) XOR
-    ///               (!is_node AND atom_bool) XOR
-    ///               negate
-    /// node_bool = (which_op  AND (atom_left OR  atom_right)) XOR
-    ///             (!which_op AND (atom_left AND atom_right))
-    /// atom_bool = (which_op  AND (val_left <= val_right)) XOR
-    ///             (!which_op AND (val_left == val_right))
+    /// cmux(choice, true_case, false_case) = false_case + choice * (true_case + false_case)
     /// ```
-    /// Let `is_lt, is_eq` be the two boolean result of `val_left < val_right`
-    /// and `val_left == val_right`.  We compute modulo 2:
+    /// using that `2 * false_case = 0` mod 2.
+    /// We thus get:
     /// ```
-    /// node_bool = which_op       * (atom_left + atom_right + atom_left * atom_right) +
-    ///             (1 + which_op) * atom_left * atom_right
-    ///           = atom_left * atom_right + which_op * (atom_left + atom_right)
-    /// ```
-    /// ```
-    /// atom_bool = which_op       * (is_lt + is_eq) +
-    ///             (1 + which_op) * is_eq
+    /// result_bool = atom_bool + is_node * (node_bool + atom_bool) + negate
+    /// node_bool = node_left * node_right + which_op * (node_left + node_right)
+    /// atom_bool = is_eq + which_op * (is_leq + is_eq)
     ///           = is_eq + which_op * is_lt
     /// ```
-    /// So we get:
-    /// ```
-    /// result_bool = is_node       * (atom_left * atom_right + which_op * (atom_left + atom_right)) +
-    ///               (1 + is_node) * (is_eq + which_op * is_lt) +
-    ///               negate
+    /// Where `is_lt, is_eq, is_leq` are the boolean result of:
+    /// 1. `val_left < val_right`
+    /// 2. `val_left == val_right`
+    /// 3. `val_left <= val_right`
     ///
-    /// ```
-    /// This uses 5 multiplications. We can reduce to 4 by:
-    /// 1. distributing the product `(1 + is_node) * B => B + is_node * B`,
-    /// 2. factorising by `is_node`,
-    /// 3. factorising by `which_op`.
-    /// ```
-    /// result_bool = is_node * (
-    ///                 atom_left * atom_right +
-    ///                 is_eq +
-    ///                 which_op * (atom_left + atom_right + is_lt)) +
-    ///               is_eq + which_op * lt +
-    ///               negate
-    /// ```
     /// Thus only 4 multiplications are required.
     ///
     /// # Total number of PBS required
     /// 1. One for retrieving the value associated to an encrypted column identifier,
     /// 2. Two for evaluating `is_eq` and `is_lt`,
-    /// 3. Two for retrieving `atom_left` and `atom_right`,
+    /// 3. Two for retrieving `node_left` and `node_right`,
     /// 4. Four for computing `result_bool`.
     ///
     /// So a total of 9 PBS for each `EncryptedInstruction`.
     fn run_query_on_entry(
-        &self,
+        &'a self,
         entry: &Vec<u64>,
-        query: &EncryptedSyntaxTree,
+        query: &'a EncryptedSyntaxTree,
         // query_lut: &mut QueryLUT,
     ) -> FheBool {
         let sk = self.server_key;
@@ -332,7 +308,7 @@ impl<'a> TableQueryRunner<'a> {
 
         if query.is_empty() {
             // if the query is empty then return true
-            return result_bool;
+            return FheBool::encrypt_trivial(true, inner_sk);
         }
 
         // else, loop through all atoms
@@ -348,18 +324,15 @@ impl<'a> TableQueryRunner<'a> {
             // (val_left <= val_right) <=> is_lt XOR is_eq
             let is_lt = is_lt(&val_left, val_right);
             let is_eq = is_eq(&val_left, val_right);
-            let atom_left = new_fhe_bool(query_lut.apply(left));
-            let atom_right = new_fhe_bool(query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4)));
+            let atom_bool = is_eq + &which_op * is_lt;
 
-            result_bool = is_node
-                * (&atom_left * &atom_right
-                    + &is_eq
-                    + &which_op * (atom_left + atom_right + &is_lt))
-                + is_eq
-                + which_op * is_lt
-                + negate;
+            let node_left = query_lut.apply(left, inner_sk);
+            let node_right = query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4), inner_sk);
+            let node_bool = &node_left * &node_right + which_op * (node_left + node_right);
 
-            query_lut.update(index as u8, result_bool.ct.clone());
+            result_bool = &atom_bool + is_node * (node_bool + &atom_bool) + negate;
+
+            query_lut.update(index as u8, &result_bool);
         }
         result_bool
     }

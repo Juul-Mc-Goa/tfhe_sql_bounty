@@ -52,17 +52,16 @@ pub fn rules() -> Vec<Rewrite> {
     rules.append(&mut rw!("not-false"; "(NOT false)" <=> "true"));
     rules.append(&mut rw!("double-negation"; "(NOT (NOT ?x))" <=> "?x"));
     // and rules
-    rules.push(rw!("and-false"; "(AND ?x false)" => "false"));
-    rules.push(rw!("and-excluded-mid"; "(AND ?x (NOT ?x))" => "false"));
     rules.append(&mut rw!("and-true"; "(AND ?x true)" <=> "?x"));
     rules.push(rw!("and-false"; "(AND ?x false)" => "false"));
+    rules.push(rw!("and-excluded-mid"; "(AND ?x (NOT ?x))" => "false"));
     rules.append(&mut rw!("associate-and"; "(AND ?x (AND ?y ?z))" <=> "(AND (AND ?x ?y) ?z)"));
     rules.append(&mut rw!("commute-and"; "(AND ?x ?y)" <=> "(AND ?y ?x)"));
     rules.append(&mut rw!("idempotent-and"; "(AND ?x ?x)" <=> "?x"));
     // or rules
-    rules.push(rw!("or-excluded-mid"; "(OR ?x (NOT ?x))" => "true"));
     rules.push(rw!("or-true"; "(OR ?x true)" => "true"));
     rules.append(&mut rw!("or-false"; "(OR ?x false)" <=> "?x"));
+    rules.push(rw!("or-excluded-mid"; "(OR ?x (NOT ?x))" => "true"));
     rules.append(&mut rw!("associate-or"; "(OR ?x (OR ?y ?z))" <=> "(OR (OR ?x ?y) ?z)"));
     rules.append(&mut rw!("commute-or"; "(OR ?x ?y)" <=> "(OR ?y ?x)"));
     rules.append(&mut rw!("idempotent-or"; "(OR ?x ?x)" <=> "?x"));

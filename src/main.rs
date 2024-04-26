@@ -16,9 +16,18 @@
 //! 4. The output vector is then encrypted and sent to the server.
 //!
 //! ## Server
-//! A provided database is handled as a structure `Tables`. It is then used to
-//! build a `TableQueryRunner`, which provides the `run_fhe_query` method. This
-//! method uses several structures defined in the module `cipher_structs`.
+//! A provided database is handled as a structure `Database`, which is a list of
+//! [`Table`]s. Each table is then used to build a
+//! `TableQueryRunner`, which provides the `run_fhe_query` method. This method:
+//! 1. runs the encrypted query on the table, ignoring the optional `DISTINCT` flag,
+//! 2. post-process the result to make it compliant with that flag.
+//!
+//! This two-step process allows for parallel computation of each table entry at
+//! step 1.  Step 2 is mainly a cmux tree of depth equals to the number of
+//! columns: the only other operations done during this step are computing sums
+//! of ciphertexts, which should not be too expensive (in terms of cpu load).
+//! See
+//! [`TableQueryRunner::is_entry_already_in_result`](TableQueryRunner::is_entry_already_in_result).
 //!
 //! ## Documentation
 //! As much of this project's logic is dictated by how a query is encrypted and
@@ -28,6 +37,52 @@
 //! + [Evaluating an encrypted syntax tree](#evaluating-an-encrypted-syntax-tree),
 //!
 //! respectively.
+//!
+//! ## Comments on the chosen architecture
+//! ### Handling only `u64`s
+//! One could choose to handle only `u256`s so that `ShortString` are simply
+//! cast into that type.  However, every other types would also be cast into
+//! `u256`, resulting in a big performance hit if most values are not
+//! `ShortString`.
+//!
+//! On the other hand, casting `ShortString` as four `u64` means that conditions
+//! like `some_str = "something"` are cast into `s0 = "<something0>" AND s1 =
+//! ... AND s3 = "<something3>"`, which means evaluating 7 instructions:
+//! * 1 for each `s0, ..., s3`, and
+//! * 1 for each `AND`.
+//!
+//! Thus this choice is less performant when the database has mostly
+//! `ShortString`s.
+//!
+//! ## Encoding the `WHERE` condition
+//! This condition is a boolean formula, represented as a syntax tree. When
+//! trying to encrypt such a syntax tree, one stumbles on a problem:
+//! representing structured data in an encrypted form is hard.
+//!
+//! One could try to transform such data into a canonical, unstructured one
+//! (like a Conjunctive/Disjunctive Normal Form), but such transformation can
+//! [blow
+//! up](https://en.wikipedia.org/wiki/Conjunctive_normal_form#Other_approaches)
+//! the size of the query.
+//!
+//! One way around it is to define [new
+//! variables](https://en.wikipedia.org/wiki/Tseytin_transformation), but this
+//! is equivalent to storing the structured data and saving the output of each
+//! boolean gate in a temporary register. This is the approach taken in this
+//! project.
+//!
+//! Once again, if the queries are assumed to be "small" when written in
+//! Conjunctive/Disjunctive Normal Form, then this choice is less performant,
+//! and better otherwise.
+//!
+//! <div class="warning">
+//!
+//! ##### Notation
+//! As performing arbitrary boolean circuit and using registers to store
+//! values sounds a lot like a minimal processor, each element of an
+//! `EncryptedSyntaxTree` is called an "instruction".
+//!
+//! </div>
 //!
 //! # Structure of the project
 //! This project is divided in the following modules:
@@ -62,10 +117,15 @@
 //! Here are the structures defined there:
 //!
 //! #### [`EntryLUT`](cipher_structs::EntryLUT)
-//! A lookup table for handling FHE computations of functions `u8 -> u64`,
+//! A lookup table for handling FHE computations of functions `u8 -> u64`.
 //!
-//! #### [`FheBool`](cipher_structs::FheBool)
-//! A wrapper for `Ciphertext` which implements the `Add, Mul, Not` traits,
+//! #### [`FheBool`]
+//! A wrapper for `Ciphertext` which implements the `Add, Mul, Not` traits. A
+//! boolean is represented by an integer modulo 2, and as a `Ciphertext`
+//! encrypts an integer modulo 4, we remove the degree checks on
+//! addition/multiplication, but keep the noise checks. See [`FheBool`]
+//! implementation of `add_assign` and its method
+//! [`binary_smart_op_optimal_cleaning_strategy`](FheBool::binary_smart_op_optimal_cleaning_strategy).
 //!
 //! #### [`QueryLUT`](cipher_structs::QueryLUT)
 //! A lookup table for handling FHE computations of functions `u8 -> FheBool`.
@@ -203,8 +263,7 @@
 //! then write the (encrypted) result of each instruction into it.
 //! <div class="warning">
 //!
-//! Strictly speaking, `query_lut` is of type `QueryLUT`, and is kept throughout
-//! entries (it is flushed at the end of each iteration).
+//! Strictly speaking, `query_lut` is of type `QueryLUT`.
 //!
 //! </div>
 //!
@@ -238,13 +297,13 @@
 //! This thus encodes a node. Let `left, right` be the two booleans that `i_l, i_r` refer to.
 //! The result boolean is then:
 //! ```
-//! (which_op AND (left OR right)) XOR
+//! (which_op       AND (left OR  right)) XOR
 //! ((NOT which_op) AND (left AND right)) XOR
 //! negate
 //! ```
 //! Which requires 7 PBS. When written using `+, *`, we obtain:
 //! ```rust
-//! which_op * (left + right + left * right) +
+//! which_op       * (left + right + left * right) +
 //! (1 + which_op) * (left * right) +
 //! negate
 //! ```
