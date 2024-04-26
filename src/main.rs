@@ -268,6 +268,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use std::time::Instant;
+use tfhe::boolean::server_key;
 
 use tfhe::integer::gen_keys_radix;
 use tfhe::integer::{wopbs::WopbsKey, ClientKey, RadixClientKey, ServerKey};
@@ -284,6 +285,8 @@ use encoding::decode_u64_string;
 use query::*;
 use tables::*;
 
+use crate::cipher_structs::FheBool;
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -295,13 +298,13 @@ struct Cli {
     query_file: PathBuf,
 }
 
-fn encrypt_query(
-    query: sqlparser::ast::Select,
-    client_key: &ClientKey,
-    headers: &DatabaseHeaders,
-) -> EncryptedQuery {
-    query::parse_query(query, headers).encrypt(client_key)
-}
+// fn encrypt_query<'a>(
+//     query: sqlparser::ast::Select,
+//     client_key: &'a ClientKey,
+//     headers: &'a DatabaseHeaders,
+// ) -> EncryptedQuery<'a> {
+//     query::parse_query(query, headers).encrypt(client_key)
+// }
 
 /// # Inputs:
 /// - sks: The server key to use
@@ -400,13 +403,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         wopbs_params,
     );
 
-    let timer = Instant::now();
-    let encrypted_query = query.encrypt(client_key.as_ref());
+    let shortint_server_key = server_key.clone().into_raw_parts();
+    let encrypted_query = query.encrypt(client_key.as_ref(), &shortint_server_key);
 
-    let ct_result = query_runner.run_fhe_query(&encrypted_query.where_condition);
+    let timer = Instant::now();
+
+    let ct_result = query_runner.run_fhe_query(&encrypted_query);
     let clear_result = ct_result
         .into_iter()
-        .map(|ct_bool: Ciphertext| client_key.decrypt_one_block(&ct_bool))
+        .map(|fhe_bool: FheBool| client_key.decrypt_one_block(&fhe_bool.ct))
         .collect::<Vec<u64>>();
 
     let total_time = timer.elapsed();

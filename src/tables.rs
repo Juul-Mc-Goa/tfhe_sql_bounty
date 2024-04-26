@@ -7,7 +7,7 @@ use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
 use crate::encoding::{encode_signed, encode_string};
-use crate::EncryptedSyntaxTree;
+use crate::{EncryptedQuery, EncryptedSyntaxTree};
 
 /// An enum with one variant for each possible type of a cell's content.
 #[derive(Debug, Clone)]
@@ -163,6 +163,10 @@ impl TableHeaders {
         }
         Err(format!("column '{column}' does not exist"))
     }
+
+    pub fn len(&self) -> usize {
+        self.0.iter().map(|(_, cell_type)| cell_type.len()).sum()
+    }
 }
 
 /// A representation of a SQL table.
@@ -299,7 +303,7 @@ impl<'a> TableQueryRunner<'a> {
         entry: &Vec<u64>,
         query: &EncryptedSyntaxTree,
         // query_lut: &mut QueryLUT,
-    ) -> Ciphertext {
+    ) -> FheBool {
         println!("\n*** NEW ENTRY ***");
         let sk = self.server_key;
         let inner_sk = &self.shortint_server_key;
@@ -329,7 +333,7 @@ impl<'a> TableQueryRunner<'a> {
 
         if query.is_empty() {
             // if the query is empty then return true
-            return result_bool.ct;
+            return result_bool;
         }
 
         // let decrypt_bool = |ct: &FheBool| self.client_key.decrypt_one_block(&ct.ct);
@@ -366,14 +370,17 @@ impl<'a> TableQueryRunner<'a> {
 
             query_lut.update(index as u8, result_bool.ct.clone());
         }
-        result_bool.ct
+        result_bool
     }
 
-    pub fn run_fhe_query(&self, query: &EncryptedSyntaxTree) -> Vec<Ciphertext> {
-        self.content
+    pub fn run_fhe_query(&'a self, query: &'a EncryptedQuery) -> Vec<FheBool> {
+        let tmp_result: Vec<FheBool> = self
+            .content
             .par_iter()
-            .map(|entry| self.run_query_on_entry(entry, query))
-            .collect()
+            .map(|entry| self.run_query_on_entry(entry, &query.where_condition))
+            .collect();
+
+        self.comply_with_distinct_bool(&query.distinct, &query.projection, tmp_result.as_slice())
     }
 }
 
