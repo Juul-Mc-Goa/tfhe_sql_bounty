@@ -1,3 +1,19 @@
+//! Optimisation of the SQL queries.
+//!
+//! This module uses the `egg` crate to define a simple `QueryLanguage` which
+//! handles basic boolean operators and the `<, <=, =` operators. It's an `enum`
+//! defined via a call to `egg`'s `define_language` macro. The methods
+//! [`U64SyntaxTree::build_recexpr`], [`U64SyntaxTree::from_recexpr`],
+//! [`U64SyntaxTree::from_root_and_expr`] are also defined to convert from/to a
+//! `QueryLanguage` object.
+//!
+//! * the funtion [`rules`] defines all rewrite rules allowed in this language.
+//! * the functions [`is_not_zero`], [`are_not_equal`] are used by the `rules`
+//! function.
+//! * the [`ConstantFold`] struct defines logic to handle integer constants in the
+//! `QueryLanguage`.
+//! * the [`CostFn`] struct defines the cost of the various operations, the total
+//! cost is to be minimized by `egg`'s `Extractor::find_best()` method.
 use egg::{rewrite as rw, *};
 
 use crate::{ComparisonOp, U64Atom, U64SyntaxTree};

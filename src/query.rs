@@ -517,7 +517,7 @@ impl ClearQuery {
         vec![
             format!("ClearQuery:"),
             format!("  distinct: {}", self.distinct),
-            format!("  column selection: {:?}", self.projection),
+            format!("  projection: {:?}", self.projection),
             format!("  table selection: {}", self.table_selection),
             format!("  where condition:"),
             self.where_condition.to_string(),
