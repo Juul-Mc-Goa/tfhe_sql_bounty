@@ -1,3 +1,5 @@
+//! Primitives for encoding and decoding various types to `u64` or `[u64; 4]`.
+
 use std::fmt;
 use std::str::FromStr;
 

@@ -46,8 +46,11 @@
 //! `ShortString`.
 //!
 //! On the other hand, casting `ShortString` as four `u64` means that conditions
-//! like `some_str = "something"` are cast into `s0 = "<something0>" AND s1 =
-//! ... AND s3 = "<something3>"`, which means evaluating 7 instructions:
+//! like `some_str = "something"` are cast into
+//! ```
+//! s0 = "<something0>" AND s1 = ... AND s3 = "<something3>"
+//! ```
+//! which means evaluating 7 instructions:
 //! * 1 for each `s0, ..., s3`, and
 //! * 1 for each `AND`.
 //!
@@ -309,9 +312,32 @@
 //! ```
 //! which simplifies to:
 //! ```rust
-//! left * right + which_op * (left + right) + negate
+//! result = left * right + which_op * (left + right) + negate
 //! ```
 //! This requires two multiplications (thus 2 PBS), plus 3 additions.
+//!
+//! One can reduce to only one multiplication using de Morgan's law:
+//!
+//! $ a \text{ OR } b = \neg (\neg a \text{ AND } \neg b),$
+//!
+//! which can also be written as:
+//!
+//! $ a + b + ab = (a+1)(b+1) + 1 \thickspace (\text{mod } 2) $
+//!
+//! Replacing:
+//! * $a$ by `left`,
+//! * $b$ by`right`,
+//! * $1$ by `which_op`,
+//!
+//! we get:
+//! ```rust
+//! result = (left + which_op) * (right + which_op) + which_op + negate
+//! ```
+//! which means 1 PBS, 4 additions.
+//! This implicitly uses that:
+//! ```
+//! (which_op * which_op) = which_op    (mod 2)
+//! ```
 //!
 //! <div class="warning">
 //!
@@ -327,11 +353,10 @@
 use clap::Parser;
 use std::path::PathBuf;
 use std::time::Instant;
-use tfhe::boolean::server_key;
 
 use tfhe::integer::gen_keys_radix;
-use tfhe::integer::{wopbs::WopbsKey, ClientKey, RadixClientKey, ServerKey};
-use tfhe::shortint::{Ciphertext, WopbsParameters};
+use tfhe::integer::{wopbs::WopbsKey, RadixClientKey, ServerKey};
+use tfhe::shortint::WopbsParameters;
 
 mod cipher_structs;
 mod distinct;
@@ -424,9 +449,11 @@ fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey, WopbsParameters) {
     // (insert Waifu + 8-bit music here)
     use tfhe::shortint::parameters::{
         parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-        PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+        PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
+        PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
     };
     let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
+    // let (ck, sk) = gen_keys_radix(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS, 16);
 
     let wopbs_parameters = WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &wopbs_parameters);

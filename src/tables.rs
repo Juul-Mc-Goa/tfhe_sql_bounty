@@ -1,3 +1,5 @@
+//! Handles how to represent the different types, content, and headers of a database.
+
 use rayon::prelude::*;
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
@@ -256,24 +258,28 @@ impl<'a> TableQueryRunner<'a> {
     /// We thus get:
     /// ```
     /// result_bool = atom_bool + is_node * (node_bool + atom_bool) + negate
-    /// node_bool = node_left * node_right + which_op * (node_left + node_right)
     /// atom_bool = is_eq + which_op * (is_leq + is_eq)
     ///           = is_eq + which_op * is_lt
+    /// ```
+    /// ```
+    /// // see crate-level documentation for how we get this formula
+    /// node_bool = (node_left + which_op) * (node_right + which_op) + which_op
     /// ```
     /// Where `is_lt, is_eq, is_leq` are the boolean result of:
     /// 1. `val_left < val_right`
     /// 2. `val_left == val_right`
     /// 3. `val_left <= val_right`
     ///
-    /// Thus only 4 multiplications are required.
+    /// Thus only 3 multiplications are required: one for each of the variables
+    /// `atom_bool, node_bool, result_bool`.
     ///
     /// # Total number of PBS required
     /// 1. One for retrieving the value associated to an encrypted column identifier,
     /// 2. Two for evaluating `is_eq` and `is_lt`,
     /// 3. Two for retrieving `node_left` and `node_right`,
-    /// 4. Four for computing `result_bool`.
+    /// 4. Three for computing `result_bool`.
     ///
-    /// So a total of 9 PBS for each `EncryptedInstruction`.
+    /// So a total of 8 PBS for each `EncryptedInstruction`.
     fn run_query_on_entry(
         &'a self,
         entry: &Vec<u64>,
@@ -328,7 +334,7 @@ impl<'a> TableQueryRunner<'a> {
 
             let node_left = query_lut.apply(left, inner_sk);
             let node_right = query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4), inner_sk);
-            let node_bool = &node_left * &node_right + which_op * (node_left + node_right);
+            let node_bool = (node_left + &which_op) * (node_right + &which_op) + which_op;
 
             result_bool = &atom_bool + is_node * (node_bool + &atom_bool) + negate;
 

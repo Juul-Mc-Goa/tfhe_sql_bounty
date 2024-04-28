@@ -1,3 +1,5 @@
+//! Implements [`TableQueryRunner`] methods for the `DISTINCT` flag.
+
 use crate::{cipher_structs::FheBool, tables::TableQueryRunner};
 
 impl<'a> TableQueryRunner<'a> {
