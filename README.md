@@ -78,7 +78,6 @@ Conjunctive/Disjunctive Normal Form, then this choice is less performant,
 and better otherwise.
 
 > [!NOTE]
-> *Notation*
 > As performing arbitrary boolean circuit and using registers to store
 > values sounds a lot like a minimal processor, each element of an
 > `EncryptedSyntaxTree` is called an "instruction".
