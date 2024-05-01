@@ -30,7 +30,6 @@ use tfhe::integer::IntegerCiphertext;
 
 use super::recursive_cmux_tree::*;
 use super::FheBool;
-// use super::regular_cmux_tree::*;
 
 /// An updatable lookup table, that holds the intermediary `FheBool`s used when
 /// running an encrypted SQL query.
@@ -49,8 +48,7 @@ impl<'a> QueryLUT<'a> {
     ) -> Self {
         // the server_key.generate_lut_radix() method needs a ciphertext for
         // computing the lut size. We use num_blocks = 4, i.e. we assume the
-        // total kength of a queryis lower than 4^4 = 256.
-        // let max_argument: RadixCiphertext = integer_server_key.create_trivial_radix(size as u64, 4);
+        // total kength of a query is lower than 4^4 = 256.
 
         let lut = GlweCiphertextList::new(
             u64::ZERO,
@@ -93,7 +91,8 @@ impl<'a> QueryLUT<'a> {
         let ct_res = self.wopbs(&ct);
 
         FheBool {
-            ct: self.wopbs_key.keyswitch_to_pbs_params(&ct_res),
+            // ct: self.wopbs_key.keyswitch_to_pbs_params(&ct_res),
+            ct: self.keyswitch_to_pbs_params(&ct_res),
             server_key,
         }
     }
@@ -288,5 +287,9 @@ impl<'a> QueryLUT<'a> {
         }).unwrap();
 
         output_cbs_vp_ct
+    }
+
+    pub fn keyswitch_to_pbs_params(&self, ct_in: &Ciphertext) -> Ciphertext {
+        keyswitch_to_pbs_params(&self.wopbs_key, ct_in)
     }
 }

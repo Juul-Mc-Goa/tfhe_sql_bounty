@@ -1,10 +1,11 @@
 //! Implements [`TableQueryRunner`] methods for the `DISTINCT` flag.
 
-use crate::{cipher_structs::FheBool, tables::TableQueryRunner};
+use crate::{FheBool, TableQueryRunner};
 
 impl<'a> TableQueryRunner<'a> {
     pub fn find_same_projection(&'a self, index: u8, projection: Vec<bool>) -> Vec<u8> {
         let index = index as usize;
+        let proj_len = projection.len();
         self.content
             .iter()
             .enumerate()
@@ -12,8 +13,10 @@ impl<'a> TableQueryRunner<'a> {
                 entry
                     .iter()
                     .enumerate()
-                    // projection[j] = true => cell = content[index][j]
-                    .all(|(j, cell)| !projection[j] || *cell == self.content[index][j])
+                    // (j < proj_len && projection[j] = true) => cell = content[index][j]
+                    .all(|(j, cell)| {
+                        j >= proj_len || !projection[j] || *cell == self.content[index][j]
+                    })
             })
             .map(|(i, _)| i as u8)
             .collect()

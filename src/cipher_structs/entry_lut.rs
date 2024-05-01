@@ -1,5 +1,18 @@
+use tfhe::core_crypto::algorithms::{
+    keyswitch_lwe_ciphertext, multi_bit_deterministic_programmable_bootstrap_lwe_ciphertext,
+    multi_bit_programmable_bootstrap_lwe_ciphertext,
+};
+use tfhe::core_crypto::entities::lwe_ciphertext::LweCiphertextOwned;
+
+use tfhe::shortint::ciphertext::NoiseLevel;
+use tfhe::shortint::server_key::ShortintBootstrappingKey;
+use tfhe::shortint::Ciphertext;
+
 use tfhe::integer::wopbs::{IntegerWopbsLUT, WopbsKey};
 use tfhe::integer::{IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, ServerKey};
+
+use crate::cipher_structs::recursive_cmux_tree::keyswitch_to_pbs_params;
+use rayon::prelude::*;
 
 /// A lookup table, taking (encrypted) `u8` as input, returning (encrypted) `u32`s.
 ///
@@ -17,10 +30,16 @@ pub struct EntryLUT<'a> {
     ),
     server_key: &'a ServerKey,
     wopbs_key: &'a WopbsKey,
+    inner_wopbs_key: &'a tfhe::shortint::wopbs::WopbsKey,
 }
 
 impl<'a> EntryLUT<'a> {
-    pub fn new(entry: &'a Vec<u64>, server_key: &'a ServerKey, wopbs_key: &'a WopbsKey) -> Self {
+    pub fn new(
+        entry: &'a Vec<u64>,
+        server_key: &'a ServerKey,
+        wopbs_key: &'a WopbsKey,
+        inner_wopbs_key: &'a tfhe::shortint::wopbs::WopbsKey,
+    ) -> Self {
         let entry_length = entry.len();
         // the server_key.generate_lut_radix() method needs a ciphertext for
         // computing the lut size. We use num_blocks = 4, i.e. we assume the
@@ -59,6 +78,7 @@ impl<'a> EntryLUT<'a> {
         Self {
             lut,
             server_key,
+            inner_wopbs_key,
             wopbs_key,
         }
     }
@@ -80,11 +100,7 @@ impl<'a> EntryLUT<'a> {
         let mut result: Vec<tfhe::shortint::Ciphertext> = Vec::new();
 
         let mut extend_result = |ct_result: &RadixCiphertext| {
-            result.extend(
-                self.wopbs_key
-                    .keyswitch_to_pbs_params(ct_result)
-                    .into_blocks(),
-            );
+            result.extend(self.keyswitch_to_pbs_params(ct_result).into_blocks());
         };
 
         extend_result(&ct_res0);
@@ -97,5 +113,23 @@ impl<'a> EntryLUT<'a> {
         extend_result(&ct_res7);
 
         RadixCiphertext::from_blocks(result)
+    }
+
+    pub fn keyswitch_block_to_pbs_params(&self, ct_in: &Ciphertext) -> Ciphertext {
+        keyswitch_to_pbs_params(&self.inner_wopbs_key, ct_in)
+    }
+
+    pub fn keyswitch_to_pbs_params<'b, T>(&self, ct_in: &'b T) -> T
+    where
+        T: IntegerCiphertext,
+        &'b [tfhe::shortint::Ciphertext]:
+            IntoParallelIterator<Item = &'b tfhe::shortint::Ciphertext>,
+    {
+        let blocks: Vec<_> = ct_in
+            .blocks()
+            .par_iter()
+            .map(|block| self.keyswitch_block_to_pbs_params(block))
+            .collect();
+        T::from_blocks(blocks)
     }
 }
