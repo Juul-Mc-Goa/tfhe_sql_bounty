@@ -68,6 +68,14 @@ pub enum CellContent {
     ShortString(String),
 }
 
+pub fn clear_entry_to_string(entry: Vec<CellContent>) -> String {
+    entry
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Returns the type of a given cell content.
 impl From<&CellContent> for CellType {
     fn from(content: &CellContent) -> Self {
@@ -88,6 +96,7 @@ impl From<&CellContent> for CellType {
 
 impl CellContent {
     /// Returns a `String` representation of its content.
+    #[allow(dead_code)]
     pub fn to_string(&self) -> String {
         match self {
             Self::Bool(b) => format!("{b}"),
@@ -99,7 +108,7 @@ impl CellContent {
             Self::I16(i) => format!("{i}"),
             Self::I32(i) => format!("{i}"),
             Self::I64(i) => format!("{i}"),
-            Self::ShortString(s) => s.clone(),
+            Self::ShortString(s) => format!("\"{s}\""),
         }
     }
     /// Encode every cell content as a vector of `u64`s. In every cases other than
@@ -176,187 +185,6 @@ impl TableHeaders {
 pub struct Table {
     pub headers: TableHeaders,
     pub content: Vec<Vec<CellContent>>,
-}
-
-/// An encoded representation of a SQL table.
-///
-/// Each entry is stored as a `Vec<u64>`. A table is a vector of entries.
-// #[derive(Debug)]
-pub struct TableQueryRunner<'a> {
-    pub content: Vec<Vec<u64>>,
-    pub client_key: &'a ClientKey,
-    pub server_key: &'a ServerKey,
-    pub shortint_server_key: tfhe::shortint::ServerKey,
-    pub wopbs_key: &'a WopbsKey,
-    pub wopbs_parameters: WopbsParameters,
-}
-
-impl<'a> TableQueryRunner<'a> {
-    pub fn new(
-        table: Table,
-        client_key: &'a ClientKey,
-        server_key: &'a ServerKey,
-        wopbs_key: &'a WopbsKey,
-        wopbs_parameters: WopbsParameters,
-    ) -> Self {
-        let shortint_server_key = server_key.clone().into_raw_parts();
-        Self {
-            content: table
-                .content
-                .iter()
-                .map(|entry| entry.iter().map(|cell| cell.encode()).flatten().collect())
-                .collect::<Vec<Vec<u64>>>(),
-            client_key,
-            server_key,
-            shortint_server_key,
-            wopbs_key,
-            wopbs_parameters,
-        }
-    }
-
-    /// Runs an encrypted query on a given entry.
-    ///
-    /// # Inputs
-    /// - `entry: &Vec<u64>` an encoded entry,
-    /// - `query: &EncryptedSyntaxTree` an encrypted `SELECT` query,
-    /// - `query_lut: &mut QueryLUT` an updatable, hidden lookup table.
-    /// # Output
-    /// A `Ciphertext` encrypting a boolean that answers the question: "Is this
-    /// entry selected by the query?"
-    ///
-    /// The encrypted boolean is actually an integer modulo 2, so that:
-    /// - `a AND b` becomes `a*b`,
-    /// - `a XOR b` becomes `a+b`,
-    /// - `a OR b` becomes `a+b+a*b`,
-    /// - `NOT a` becomes `1+a`.
-    ///
-    /// Then the boolean formulas are simplified so as to minimize the number of
-    /// multiplications, using the fact that addition is much faster than PBS.
-    /// We also use that:
-    ///
-    /// $(a \lt b) \text{ XOR } (a = b) \iff a \leq b$.
-    ///
-    /// # Simplification of the boolean formulas:
-    ///
-    /// We first write:
-    /// ```
-    /// result_bool:
-    ///   | if is_node: node_bool XOR negate
-    ///   | else:       atom_bool XOR negate
-    /// node_bool:
-    ///   | if which_op: node_left OR  node_right
-    ///   | else:        node_left AND node_right
-    /// atom_bool:
-    ///   | if which_op: val_left <= val_right
-    ///   | else:        val_left == val_right
-    /// ```
-    /// and write the formula for a cmux using `+,*`:
-    /// ```
-    /// cmux(choice, true_case, false_case) = false_case + choice * (true_case + false_case)
-    /// ```
-    /// using that `2 * false_case = 0` mod 2.
-    /// We thus get:
-    /// ```
-    /// result_bool = atom_bool + is_node * (node_bool + atom_bool) + negate
-    /// atom_bool = is_eq + which_op * (is_leq + is_eq)
-    ///           = is_eq + which_op * is_lt
-    /// ```
-    /// ```
-    /// // see crate-level documentation for how we get this formula
-    /// node_bool = (node_left + which_op) * (node_right + which_op) + which_op
-    /// ```
-    /// Where `is_lt, is_eq, is_leq` are the boolean result of:
-    /// 1. `val_left < val_right`
-    /// 2. `val_left == val_right`
-    /// 3. `val_left <= val_right`
-    ///
-    /// Thus only 3 multiplications are required: one for each of the variables
-    /// `atom_bool, node_bool, result_bool`.
-    ///
-    /// # Total number of PBS required
-    /// 1. One for retrieving the value associated to an encrypted column identifier,
-    /// 2. Two for evaluating `is_eq` and `is_lt`,
-    /// 3. Two for retrieving `node_left` and `node_right`,
-    /// 4. Three for computing `result_bool`.
-    ///
-    /// So a total of 8 PBS for each `EncryptedInstruction`.
-    fn run_query_on_entry(
-        &'a self,
-        entry: &Vec<u64>,
-        query: &'a EncryptedSyntaxTree,
-        // query_lut: &mut QueryLUT,
-    ) -> FheBool {
-        let sk = self.server_key;
-        let inner_sk = &self.shortint_server_key;
-        let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
-
-        let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key);
-        let mut query_lut: QueryLUT<'_> = QueryLUT::new(
-            query.len(),
-            &inner_sk,
-            &inner_wopbs,
-            self.wopbs_parameters.clone(),
-        );
-
-        let new_fhe_bool = |ct: Ciphertext| FheBool {
-            ct,
-            server_key: inner_sk,
-        };
-        let mut result_bool = FheBool::encrypt_trivial(true, inner_sk);
-
-        let is_lt = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
-            new_fhe_bool(sk.lt_parallelized(a, b).into_inner())
-        };
-
-        let is_eq = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
-            new_fhe_bool(sk.eq_parallelized(a, b).into_inner())
-        };
-
-        if query.is_empty() {
-            // if the query is empty then return true
-            return FheBool::encrypt_trivial(true, inner_sk);
-        }
-
-        // else, loop through all atoms
-        for (index, (is_node, left, which_op, right, negate)) in query.iter().enumerate() {
-            let (is_node, which_op, negate) = (
-                new_fhe_bool(is_node.clone()),
-                new_fhe_bool(which_op.clone()),
-                new_fhe_bool(negate.clone()),
-            );
-
-            let val_left = entry_lut.apply(left);
-            let val_right = right;
-            // (val_left <= val_right) <=> is_lt XOR is_eq
-            let is_lt = is_lt(&val_left, val_right);
-            let is_eq = is_eq(&val_left, val_right);
-            let atom_bool = is_eq + &which_op * is_lt;
-
-            let node_left = query_lut.apply(left, inner_sk);
-            let node_right = query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4), inner_sk);
-            let node_bool = (node_left + &which_op) * (node_right + &which_op) + which_op;
-
-            result_bool = &atom_bool + is_node * (node_bool + &atom_bool) + negate;
-
-            query_lut.update(index as u8, &result_bool);
-        }
-        result_bool
-    }
-
-    /// Runs an encrypted SQL query on a clear table.
-    ///
-    /// For each table entry, computes (in parallel) if it is present in the
-    /// result, ignoring the optional `DISTINCT` flag. Then process the result
-    /// to comply with that flag.
-    pub fn run_fhe_query(&'a self, query: &'a EncryptedQuery) -> Vec<FheBool> {
-        let tmp_result: Vec<FheBool> = self
-            .content
-            .par_iter()
-            .map(|entry| self.run_query_on_entry(entry, &query.where_condition))
-            .collect();
-
-        self.comply_with_distinct_bool(&query.distinct, &query.projection, tmp_result.as_slice())
-    }
 }
 
 /// A list of pairs `(table_name, headers)`.

@@ -3,6 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::{CellContent, CellType, TableHeaders};
+
 /// Encodes a signed integer into a `u64`. This is done by first casting to an
 /// `i64`, casting to `u64`, then inverting the MSB.
 pub fn encode_signed<T>(u: T) -> u64
@@ -82,4 +84,46 @@ pub fn decode_u64_string(v: Vec<u64>) -> String {
         .expect("Could not create a str from a vector of bytes.")
         .trim_matches('\0')
         .into()
+}
+
+#[allow(dead_code)]
+pub fn decode_entry(
+    headers: &TableHeaders,
+    entry: Vec<u64>,
+    projection: &[bool],
+) -> Vec<CellContent> {
+    let decode_i64 = |u: u64| {
+        if u < (1 << 63) {
+            -(u as i64)
+        } else {
+            (u - (1 << 63)) as i64
+        }
+    };
+    let mut entry_index = 0;
+    let mut result: Vec<CellContent> = Vec::with_capacity(headers.0.len());
+    for (i, (_column_name, cell_type)) in headers.0.iter().enumerate() {
+        if !projection[i] {
+            continue;
+        }
+        let new_cellcontent = match cell_type {
+            CellType::Bool => CellContent::Bool(entry[entry_index] != 0),
+            CellType::U8 => CellContent::U8(entry[entry_index] as u8),
+            CellType::U16 => CellContent::U16(entry[entry_index] as u16),
+            CellType::U32 => CellContent::U32(entry[entry_index] as u32),
+            CellType::U64 => CellContent::U64(entry[entry_index]),
+            CellType::I8 => CellContent::I8(decode_i64(entry[entry_index]) as i8),
+            CellType::I16 => CellContent::I16(decode_i64(entry[entry_index]) as i16),
+            CellType::I32 => CellContent::I32(decode_i64(entry[entry_index]) as i32),
+            CellType::I64 => CellContent::I64(decode_i64(entry[entry_index])),
+            CellType::ShortString => {
+                entry_index += 3;
+                CellContent::ShortString(decode_u64_string(
+                    entry[(entry_index - 3)..(entry_index + 1)].to_vec(),
+                ))
+            }
+        };
+        result.push(new_cellcontent);
+        entry_index += 1;
+    }
+    result
 }

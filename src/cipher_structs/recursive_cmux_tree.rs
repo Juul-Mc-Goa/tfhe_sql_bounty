@@ -1,20 +1,27 @@
 //! Reimplementation of `core_crypto` functions, used for "hidden" lookup tables.
 //!
-//! Memory requirements reimplementations:
+//! ### Memory requirements
 //! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized_requirement`
 //! - `vertical_packing_scratch`
 //! - `cmux_tree_recursive_scratch`
 //!
-//! Other functions:
+//! ### Core crypto functions
 //! - `circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized`
 //! - `circuit_bootstrap_boolean_vertical_packing`
 //! - `vertical_packing`
 //! - `cmux_tree_recursive` (replaces `cmux_tree_memory_optimized`)
+//!
+//! ### Other
+//! - `keyswitch_to_pbs_params`
 
 use aligned_vec::CACHELINE_ALIGN;
 use dyn_stack::{PodStack, ReborrowMut, SizeOverflow, StackReq};
 
-use tfhe::core_crypto::algorithms::glwe_sample_extraction::extract_lwe_sample_from_glwe_ciphertext;
+use tfhe::core_crypto::algorithms::{
+    extract_lwe_sample_from_glwe_ciphertext, keyswitch_lwe_ciphertext,
+    multi_bit_deterministic_programmable_bootstrap_lwe_ciphertext,
+    multi_bit_programmable_bootstrap_lwe_ciphertext,
+};
 use tfhe::core_crypto::commons::parameters::*;
 use tfhe::core_crypto::commons::traits::*;
 use tfhe::core_crypto::entities::*;
@@ -31,6 +38,11 @@ use tfhe::core_crypto::fft_impl::fft64::crypto::wop_pbs::{
 use tfhe::core_crypto::fft_impl::fft64::math::fft::FftView;
 
 use concrete_fft::c64;
+
+use tfhe::shortint::ciphertext::NoiseLevel;
+use tfhe::shortint::server_key::ShortintBootstrappingKey;
+use tfhe::shortint::wopbs::WopbsKey;
+use tfhe::shortint::Ciphertext;
 
 #[allow(clippy::too_many_arguments)]
 /// Return the required memory for
@@ -316,6 +328,9 @@ pub fn vertical_packing(
 /// - `split_index` is equal to $2^{n-1}$.
 ///
 /// Thus no call to the primitive `blind_rotate_assign` is done.
+///
+/// This function was written because I couldn't make sense of
+/// [`cmux_tree_memory_optimized`](tfhe::core_crypto::fft_impl::fft64::crypto::wop_pbs::cmux_tree_memory_optimized).
 pub fn cmux_tree_recursive(
     mut output_glwe: GlweCiphertext<&mut [u64]>,
     lut: GlweCiphertextList<&[u64]>,
@@ -460,4 +475,73 @@ pub fn cmux_tree_recursive(
     );
 
     output_glwe.as_mut().copy_from_slice(layers.get(0).as_ref());
+}
+
+/// For some reason, switching from a [`WopbsKey`] to a
+/// [`FourierLweMultiBitBootstrapKeyOwned`] is not allowed in
+/// [`WopbsKey::keyswitch_to_pbs_params`]. So we code it ourself.
+pub fn keyswitch_to_pbs_params(wopbs_key: &WopbsKey, ct_in: &Ciphertext) -> Ciphertext {
+    match &wopbs_key.pbs_server_key.bootstrapping_key {
+        ShortintBootstrappingKey::Classic(_) => wopbs_key.keyswitch_to_pbs_params(ct_in),
+        ShortintBootstrappingKey::MultiBit {
+            fourier_bsk,
+            thread_count,
+            deterministic_execution,
+        } => {
+            // move to wopbs parameters to pbs parameters
+            // Keyswitch-PBS:
+            // 1. KS to go back to the original encryption key
+            // 2. PBS to remove the noise added by the previous KS
+
+            let ksk = &wopbs_key.pbs_server_key.key_switching_key;
+            let (mut lwe_after_ks, mut ct_out) = {
+                (
+                    LweCiphertextOwned::new(
+                        0u64,
+                        ksk.output_key_lwe_dimension().to_lwe_size(),
+                        ksk.ciphertext_modulus(),
+                    ),
+                    LweCiphertextOwned::new(
+                        0u64,
+                        fourier_bsk.output_lwe_dimension().to_lwe_size(),
+                        ksk.ciphertext_modulus(),
+                    ),
+                )
+            };
+
+            // define PBS lookup table
+            let acc = wopbs_key.pbs_server_key.generate_lookup_table(|x| x);
+
+            // compute key switch
+            keyswitch_lwe_ciphertext(&ksk, &ct_in.ct, &mut lwe_after_ks);
+
+            // perform bootstrap
+            if *deterministic_execution {
+                multi_bit_deterministic_programmable_bootstrap_lwe_ciphertext(
+                    &lwe_after_ks,
+                    &mut ct_out,
+                    &acc.acc,
+                    fourier_bsk,
+                    *thread_count,
+                );
+            } else {
+                multi_bit_programmable_bootstrap_lwe_ciphertext(
+                    &lwe_after_ks,
+                    &mut ct_out,
+                    &acc.acc,
+                    fourier_bsk,
+                    *thread_count,
+                );
+            }
+
+            Ciphertext::new(
+                ct_out,
+                ct_in.degree,
+                NoiseLevel::NOMINAL,
+                ct_in.message_modulus,
+                ct_in.carry_modulus,
+                ct_in.pbs_order,
+            )
+        }
+    }
 }

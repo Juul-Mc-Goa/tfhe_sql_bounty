@@ -104,16 +104,18 @@
 //! methods to `U64SyntaxTree` to convert it to an instance of `QueryLanguage`,
 //! and to convert it back to the initial type.
 //!
-//! ### [`tables`]
-//! Handles the representation of tables, entries, and cells. Also provides a
-//! [`TableQueryRunner`](`tables::TableQueryRunner`) type for performing the FHE
-//! computations. Tables are stored as a struct with two fields:
-//! 1. `headers: Vec<CellType>`,
-//! 2. `content: Vec<Vec<CellContent>>`.
+//! ### [`encoding`]
+//! Primitives for encoding different types to `u64`, or `[u64; 4]`.
 //!
-//! The type `CellType` is just an enum containing the different types allowed
-//! in a cell.  The type `CellContent` is an enum with a variant for each type,
-//! and a field holding the content.
+//! ### [`tables`]
+//! Handles the representation of tables, entries, and cells.
+//!
+//! ### [`runner`]
+//! Provides the [`TableQueryRunner`] and [`DbQueryRunner`] types for running
+//! the FHE query.
+//!
+//! ### [`distinct`]
+//! Implements methods for handling the `DISTINCT` flag.
 //!
 //! ### [`cipher_structs`]
 //! Contains the definition of a few structures handling encrypted data.
@@ -261,7 +263,7 @@
 //! each entry.
 //!
 //! Let `n` be the length of the encoded query. The
-//! [`TableQueryRunner::run_query_on_entry`](tables::TableQueryRunner::run_query_on_entry)
+//! [`TableQueryRunner::run_query_on_entry`](TableQueryRunner::run_query_on_entry)
 //! method first creates a vector `query_lut: Vec<Ciphertext>`, of size `n`,
 //! then write the (encrypted) result of each instruction into it.
 //! <div class="warning">
@@ -346,7 +348,7 @@
 //! 2. one PBS is necessary to process the boolean `is_node`,
 //! 3. some more PBS are needed to handle the `is_node == false` case.
 //!
-//! See at [`run_query_on_entry`](tables::TableQueryRunner::run_query_on_entry)
+//! See at [`run_query_on_entry`](TableQueryRunner::run_query_on_entry)
 //! for a full analysis.
 //! </div>
 
@@ -356,20 +358,23 @@ use std::time::Instant;
 
 use tfhe::integer::gen_keys_radix;
 use tfhe::integer::{wopbs::WopbsKey, RadixClientKey, ServerKey};
-use tfhe::shortint::WopbsParameters;
+use tfhe::shortint::{ServerKey as ShortintSK, WopbsParameters};
 
 mod cipher_structs;
 mod distinct;
 mod encoding;
 mod query;
+mod runner;
 mod simplify_query;
 mod tables;
 
-use encoding::decode_u64_string;
+use cipher_structs::FheBool;
+use encoding::decode_entry;
 use query::*;
+use runner::{EncryptedResult, TableQueryRunner};
 use tables::*;
 
-use crate::cipher_structs::FheBool;
+use crate::runner::DbQueryRunner;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -406,66 +411,75 @@ struct Cli {
 /// The output of this function should be a string using the CSV format
 /// You should provide a way to compare this string with the output of
 /// the clear DB system you use for comparison
-// fn decrypt_result(clientk_key: &ClientKey, result: &EncryptedResult) -> String;
+fn decrypt_result(
+    client_key: &RadixClientKey,
+    result: &EncryptedResult,
+    headers: DatabaseHeaders,
+    table_selection: u8,
+) -> String {
+    let table_headers = headers.0[table_selection as usize].1.clone();
 
-#[allow(dead_code)]
-fn decode_entry(headers: TableHeaders, entry: Vec<u64>) -> Vec<CellContent> {
-    let decode_i64 = |i: u64| {
-        if i < (1 << 63) {
-            -(i as i64)
-        } else {
-            (i - (1 << 63)) as i64
-        }
-    };
-    let mut entry_index = 0;
-    let mut result: Vec<CellContent> = Vec::with_capacity(headers.0.len());
-    for (_column_name, cell_type) in headers.0 {
-        let new_cellcontent = match cell_type {
-            CellType::Bool => CellContent::Bool(entry[entry_index] != 0),
-            CellType::U8 => CellContent::U8(entry[entry_index] as u8),
-            CellType::U16 => CellContent::U16(entry[entry_index] as u16),
-            CellType::U32 => CellContent::U32(entry[entry_index] as u32),
-            CellType::U64 => CellContent::U64(entry[entry_index]),
-            CellType::I8 => CellContent::I8(decode_i64(entry[entry_index]) as i8),
-            CellType::I16 => CellContent::I16(decode_i64(entry[entry_index]) as i16),
-            CellType::I32 => CellContent::I32(decode_i64(entry[entry_index]) as i32),
-            CellType::I64 => CellContent::I64(decode_i64(entry[entry_index])),
-            CellType::ShortString => {
-                entry_index += 3;
-                CellContent::ShortString(decode_u64_string(
-                    entry[(entry_index - 3)..(entry_index + 1)].to_vec(),
-                ))
-            }
-        };
-        result.push(new_cellcontent);
-        entry_index += 1;
-    }
+    let clear_projection = result
+        .projection
+        .iter()
+        .map(|column_bool| (client_key.decrypt_one_block(column_bool) % 2) != 0)
+        .collect::<Vec<bool>>();
+
+    let entry_in_result = result
+        .is_entry_in_result
+        .iter()
+        .map(|entry_bool| (client_key.decrypt_one_block(entry_bool) % 2) != 0)
+        .collect::<Vec<bool>>();
+
     result
+        .content
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| entry_in_result[*i])
+        .map(|(_, entry)| {
+            let clear_entry = entry
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| clear_projection[*i])
+                .map(|(_, cell)| client_key.decrypt::<u64>(cell))
+                .collect::<Vec<_>>();
+            clear_entry_to_string(decode_entry(&table_headers, clear_entry, &clear_projection))
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
 }
 
 #[allow(dead_code)]
-fn generate_keys() -> (RadixClientKey, ServerKey, WopbsKey, WopbsParameters) {
+fn generate_keys() -> (
+    RadixClientKey,
+    ServerKey,
+    ShortintSK,
+    WopbsKey,
+    WopbsParameters,
+) {
     // KeyGen...
     // (insert Waifu + 8-bit music here)
     use tfhe::shortint::parameters::{
         parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-        PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
+        // PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+        // PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
         PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
     };
-    let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
-    // let (ck, sk) = gen_keys_radix(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS, 16);
+    // let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
+    let (ck, sk) = gen_keys_radix(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS, 16);
+    let shortint_server_key = sk.clone().into_raw_parts();
 
     let wopbs_parameters = WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &wopbs_parameters);
 
-    (ck, sk, wopbs_key, wopbs_parameters)
+    (ck, sk, shortint_server_key, wopbs_key, wopbs_parameters)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     println!("KeyGen...");
-    let (client_key, server_key, wopbs_key, wopbs_params) = generate_keys();
+    let (client_key, server_key, shortint_server_key, wopbs_key, wopbs_params) = generate_keys();
     println!("...done.");
 
     // parse cli args
@@ -479,26 +493,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query = parse_query_from_file(query_path, &headers);
     println!("\n{}\n", query.pretty());
 
-    let (_, table) = db.tables[query.table_selection as usize].clone();
+    // let (_, table) = db.tables[query.table_selection as usize].clone();
+    // let query_runner = TableQueryRunner::new(
+    //     table,
+    //     client_key.as_ref(),
+    //     &server_key,
+    //     &wopbs_key,
+    //     wopbs_params,
+    // );
 
-    let query_runner = TableQueryRunner::new(
-        table,
-        client_key.as_ref(),
+    let query_runner = DbQueryRunner::new(
+        db,
+        &client_key,
         &server_key,
+        &shortint_server_key,
         &wopbs_key,
         wopbs_params,
     );
 
-    let shortint_server_key = server_key.clone().into_raw_parts();
     let encrypted_query = query.encrypt(client_key.as_ref(), &shortint_server_key);
 
     let timer = Instant::now();
 
-    let ct_result = query_runner.run_fhe_query(&encrypted_query);
-    let clear_result = ct_result
-        .into_iter()
-        .map(|fhe_bool: FheBool| client_key.decrypt_one_block(&fhe_bool.ct))
-        .collect::<Vec<u64>>();
+    let ct_result = query_runner.run_query(&encrypted_query);
+    println!("decrypting...");
+    let clear_result = decrypt_result(&client_key, &ct_result, headers, query.table_selection);
 
     let total_time = timer.elapsed();
 
@@ -507,8 +526,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         total_time.as_secs(),
         total_time.subsec_millis() / 10
     );
-    println!("Clear DB Result: TODO");
-    println!("Encrypted DB Result: {clear_result:?}");
+    println!("Clear DB Result: TODO\n");
+    println!("Encrypted DB Result:\n{clear_result}\n");
     println!("Results match: TODO");
 
     Ok(())
