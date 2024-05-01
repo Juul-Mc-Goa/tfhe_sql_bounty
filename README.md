@@ -17,7 +17,7 @@ the two operators `=, <=` are used. See [Encoding `op`](#encoding-op) for more.
 
 ## Server
 A provided database is handled as a structure `Database`, which is a list of
-[`Table`]s. Each table is then used to build a
+`Table`s. Each table is then used to build a
 `TableQueryRunner`, which provides the `run_fhe_query` method. This method:
 1. runs the encrypted query on the table, ignoring the optional `DISTINCT` flag,
 2. post-process the result to make it compliant with that flag.
@@ -86,7 +86,7 @@ and better otherwise.
 # Structure of the project
 This project is divided in the following modules:
 
-### [`query`]
+### `query`
 Handles converting a `sqlparser::ast::Select` into an internal
 representation of the syntax tree, as well as encoding it into a vector of
 tuples:
