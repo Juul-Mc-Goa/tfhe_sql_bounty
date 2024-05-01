@@ -334,7 +334,7 @@ result = (left + which_op) * (right + which_op) + which_op + negate
 which means 1 PBS, 4 additions.
 This implicitly uses that:
 ```math
-which_op * which_op = which_op    (mod 2)
+\texttt{which_op} * \texttt{which_op} = \texttt{which_op}    (mod \; 2)
 ```
 
 > [!WARNING]
