@@ -353,11 +353,13 @@
 //! </div>
 
 use clap::Parser;
+use sqlparser::ast::{Expr, SelectItem};
+use sqlparser::parser::WildcardExpr;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use tfhe::integer::gen_keys_radix;
-use tfhe::integer::{wopbs::WopbsKey, RadixClientKey, ServerKey};
+use tfhe::integer::{gen_keys_radix, wopbs::WopbsKey, ClientKey, RadixClientKey, ServerKey};
 use tfhe::shortint::{ServerKey as ShortintSK, WopbsParameters};
 
 mod cipher_structs;
@@ -369,7 +371,7 @@ mod simplify_query;
 mod tables;
 
 use cipher_structs::FheBool;
-use encoding::decode_entry;
+use encoding::{decode_cell, decode_entry};
 use query::*;
 use runner::{EncryptedResult, TableQueryRunner};
 use tables::*;
@@ -387,13 +389,22 @@ struct Cli {
     query_file: PathBuf,
 }
 
-// fn encrypt_query<'a>(
-//     query: sqlparser::ast::Select,
-//     client_key: &'a ClientKey,
-//     headers: &'a DatabaseHeaders,
-// ) -> EncryptedQuery<'a> {
-//     query::parse_query(query, headers).encrypt(client_key)
-// }
+/// Encrypts a `sqlparser::ast::Select` query.
+///
+/// # Inputs
+/// + a `query`,
+/// + a `client_key`,
+/// + a `shortint_sk` for initializing some (custom) [`FheBool`]s,
+/// + a `headers` struct for turning column identifiers into indices.
+#[allow(dead_code)]
+fn encrypt_query<'a>(
+    query: sqlparser::ast::Select,
+    client_key: &'a ClientKey,
+    shortint_sk: &'a tfhe::shortint::ServerKey,
+    headers: &'a DatabaseHeaders,
+) -> EncryptedQuery<'a> {
+    query::parse_query(query, headers).encrypt(&client_key, shortint_sk)
+}
 
 /// # Inputs:
 /// - sks: The server key to use
@@ -408,16 +419,13 @@ struct Cli {
 //     data: &Tables,
 // ) -> EncryptedResult;
 
-/// The output of this function should be a string using the CSV format
-/// You should provide a way to compare this string with the output of
-/// the clear DB system you use for comparison
-fn decrypt_result(
+fn decrypt_result_to_hashmap(
     client_key: &RadixClientKey,
     result: &EncryptedResult,
     headers: DatabaseHeaders,
-    table_selection: u8,
-) -> String {
-    let table_headers = headers.0[table_selection as usize].1.clone();
+    query: ClearQuery,
+) -> HashMap<String, u32> {
+    let table_headers = headers.0[query.table_selection as usize].1.clone();
 
     let clear_projection = result
         .projection
@@ -431,22 +439,85 @@ fn decrypt_result(
         .map(|entry_bool| (client_key.decrypt_one_block(entry_bool) % 2) != 0)
         .collect::<Vec<bool>>();
 
-    result
+    let mut hashmap: HashMap<String, u32> = HashMap::new();
+
+    for (_, entry) in result
         .content
         .iter()
         .enumerate()
         .filter(|(i, _)| entry_in_result[*i])
-        .map(|(_, entry)| {
-            let clear_entry = entry
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| clear_projection[*i])
-                .map(|(_, cell)| client_key.decrypt::<u64>(cell))
-                .collect::<Vec<_>>();
-            clear_entry_to_string(decode_entry(&table_headers, clear_entry, &clear_projection))
-        })
-        .collect::<Vec<String>>()
-        .join("\n")
+    {
+        let clear_entry = entry
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| {
+                if clear_projection[i] {
+                    client_key.decrypt::<u64>(cell)
+                } else {
+                    0u64
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut decoded_result: Vec<String> = Vec::new();
+
+        for column_id in query.sql_projection.iter() {
+            match column_id {
+                SelectItem::UnnamedExpr(Expr::Identifier(id)) => {
+                    let ident = id.value.clone();
+                    let index = table_headers
+                        .index_of(ident.clone())
+                        .expect("Column identifier {ident} does not exist")
+                        as usize;
+                    let cell_type = table_headers.type_of(ident).unwrap();
+                    let cell_len = cell_type.len();
+                    let string_result =
+                        decode_cell(cell_type, clear_entry[index..(index + cell_len)].to_vec())
+                            .to_string();
+                    decoded_result.push(string_result);
+                }
+                SelectItem::Wildcard(_) => {
+                    let string_result = decode_entry(
+                        &table_headers,
+                        clear_entry,
+                        vec![true; table_headers.len()].as_ref(),
+                    )
+                    .into_iter()
+                    .map(|cell| cell.to_string())
+                    .collect::<Vec<String>>()
+                    .join(",");
+                    decoded_result = vec![string_result];
+                    break;
+                }
+                _ => todo!(),
+            }
+        }
+
+        let decoded_result = decoded_result.join(",");
+        if let Some(u) = hashmap.get_mut(&decoded_result) {
+            *u += 1;
+        } else {
+            hashmap.insert(decoded_result, 1);
+        }
+    }
+
+    hashmap
+}
+
+/// The output of this function should be a string using the CSV format
+/// You should provide a way to compare this string with the output of
+/// the clear DB system you use for comparison
+fn decrypt_result(
+    client_key: &RadixClientKey,
+    result: &EncryptedResult,
+    headers: DatabaseHeaders,
+    query: ClearQuery,
+) -> String {
+    let mut result_vec: Vec<String> = Vec::new();
+    for (k, v) in decrypt_result_to_hashmap(client_key, result, headers, query).iter() {
+        result_vec.push(k.repeat(*v as usize));
+    }
+    result_vec.join("\n")
 }
 
 #[allow(dead_code)]
@@ -517,7 +588,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ct_result = query_runner.run_query(&encrypted_query);
     println!("decrypting...");
-    let clear_result = decrypt_result(&client_key, &ct_result, headers, query.table_selection);
+    let clear_result = decrypt_result(&client_key, &ct_result, headers, query);
 
     let total_time = timer.elapsed();
 

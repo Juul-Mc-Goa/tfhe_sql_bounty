@@ -1,8 +1,0 @@
-some_int:uint32,some_bool:bool,some_str:string
-0,true,"first line"
-123,false,"some other line"
-1,false,"test"
-2,false,"other test"
-3,false,"test"
-3,false,"other test"
-2,false,"test"
