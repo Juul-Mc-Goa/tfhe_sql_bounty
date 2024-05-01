@@ -354,7 +354,6 @@
 
 use clap::Parser;
 use sqlparser::ast::{Expr, SelectItem};
-use sqlparser::parser::WildcardExpr;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -477,15 +476,11 @@ fn decrypt_result_to_hashmap(
                     decoded_result.push(string_result);
                 }
                 SelectItem::Wildcard(_) => {
-                    let string_result = decode_entry(
+                    let string_result = clear_entry_to_string(decode_entry(
                         &table_headers,
                         clear_entry,
                         vec![true; table_headers.len()].as_ref(),
-                    )
-                    .into_iter()
-                    .map(|cell| cell.to_string())
-                    .collect::<Vec<String>>()
-                    .join(",");
+                    ));
                     decoded_result = vec![string_result];
                     break;
                 }
@@ -532,12 +527,13 @@ fn generate_keys() -> (
     // (insert Waifu + 8-bit music here)
     use tfhe::shortint::parameters::{
         parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-        // PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+        PARAM_MESSAGE_2_CARRY_2_KS_PBS,
         // PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-        PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
+        // PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
     };
-    // let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
-    let (ck, sk) = gen_keys_radix(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS, 16);
+    let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
+    // let (ck, sk) = gen_keys_radix(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS, 16);
+    // let (ck, sk) = gen_keys_radix(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS, 16);
     let shortint_server_key = sk.clone().into_raw_parts();
 
     let wopbs_parameters = WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS;
@@ -558,8 +554,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query_path = cli.query_file;
 
     // load db, parse query
-    let db = load_tables(db_dir_path.into(), server_key.clone(), wopbs_key.clone())
-        .expect("Failed to load DB at {db_dir_path}");
+    let db = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
     let headers = db.headers();
     let query = parse_query_from_file(query_path, &headers);
     println!("\n{}\n", query.pretty());
@@ -575,7 +570,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let query_runner = DbQueryRunner::new(
         db,
-        &client_key,
         &server_key,
         &shortint_server_key,
         &wopbs_key,

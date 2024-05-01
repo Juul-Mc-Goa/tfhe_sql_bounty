@@ -1,15 +1,9 @@
 //! Handles how to represent the different types, content, and headers of a database.
 
-use rayon::prelude::*;
 use std::fs;
 use std::{fs::read_to_string, path::PathBuf, str::FromStr};
-use tfhe::integer::wopbs::WopbsKey;
-use tfhe::integer::{ClientKey, IntegerCiphertext, RadixCiphertext, ServerKey};
-use tfhe::shortint::{Ciphertext, WopbsParameters};
 
-use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
 use crate::encoding::{encode_signed, encode_string};
-use crate::{EncryptedQuery, EncryptedSyntaxTree};
 
 /// An enum with one variant for each possible type of a cell's content.
 #[derive(Debug, Clone)]
@@ -192,8 +186,6 @@ pub struct DatabaseHeaders(pub Vec<(String, TableHeaders)>);
 
 /// A vector of tuples `(table_name, table)`, plus a `ServerKey` and a `WopbsKey`.
 pub struct Database {
-    pub server_key: ServerKey,
-    pub wopbs_key: WopbsKey,
     pub tables: Vec<(String, Table)>,
 }
 
@@ -213,18 +205,6 @@ impl DatabaseHeaders {
 }
 
 impl Database {
-    /// Maps a table name to its index in the vector.
-    pub fn table_index(&self, table_name: String) -> u8 {
-        for (i, (name, _)) in self.tables.iter().enumerate() {
-            if name == &table_name {
-                return i as u8;
-            }
-        }
-        panic!(
-            "table {table_name} not found in: {:?}",
-            self.tables.iter().map(|(name, _)| name).collect::<Vec<_>>()
-        )
-    }
     /// Outputs a list of table headers found in the database.
     pub fn headers(&self) -> DatabaseHeaders {
         DatabaseHeaders(
@@ -263,11 +243,7 @@ fn read_headers(path: PathBuf) -> TableHeaders {
 ///   - `table_1.csv`
 ///   - `table_2.csv`
 ///   - ...
-pub fn load_tables(
-    path: PathBuf,
-    server_key: ServerKey,
-    wopbs_key: WopbsKey,
-) -> Result<Database, Box<dyn std::error::Error>> {
+pub fn load_tables(path: PathBuf) -> Result<Database, Box<dyn std::error::Error>> {
     let mut result: Vec<(String, Table)> = Vec::new();
     let db_path = fs::read_dir(path).expect("Database path error: can't read directory {path}");
     for table_file in db_path {
@@ -292,11 +268,7 @@ pub fn load_tables(
         }
         result.push((table_name, Table { headers, content }))
     }
-    Ok(Database {
-        server_key,
-        wopbs_key,
-        tables: result,
-    })
+    Ok(Database { tables: result })
 }
 
 #[cfg(test)]
