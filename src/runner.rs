@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 use tfhe::integer::wopbs::WopbsKey;
-use tfhe::integer::{RadixCiphertext, RadixClientKey, ServerKey};
+use tfhe::integer::{RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
@@ -83,10 +83,8 @@ impl<'a> EncryptedResult<'a> {
 /// An encoded representation of a SQL table.
 ///
 /// Each entry is stored as a `Vec<u64>`. A table is a vector of entries.
-// #[derive(Debug)]
 pub struct TableQueryRunner<'a> {
     pub content: Vec<Vec<u64>>,
-    pub client_key: &'a RadixClientKey,
     pub server_key: &'a ServerKey,
     pub shortint_server_key: &'a tfhe::shortint::ServerKey,
     pub wopbs_key: &'a WopbsKey,
@@ -96,7 +94,6 @@ pub struct TableQueryRunner<'a> {
 impl<'a> TableQueryRunner<'a> {
     pub fn new(
         table: Table,
-        client_key: &'a RadixClientKey,
         server_key: &'a ServerKey,
         shortint_server_key: &'a tfhe::shortint::ServerKey,
         wopbs_key: &'a WopbsKey,
@@ -108,7 +105,6 @@ impl<'a> TableQueryRunner<'a> {
                 .iter()
                 .map(|entry| entry.iter().map(|cell| cell.encode()).flatten().collect())
                 .collect::<Vec<Vec<u64>>>(),
-            client_key,
             server_key,
             shortint_server_key,
             wopbs_key,
@@ -293,16 +289,12 @@ impl<'a> TableQueryRunner<'a> {
 
 pub struct DbQueryRunner<'a> {
     pub server_key: &'a ServerKey,
-    pub shortint_server_key: &'a tfhe::shortint::ServerKey,
-    pub wopbs_key: &'a WopbsKey,
-    pub wopbs_parameters: WopbsParameters,
     pub tables: Vec<TableQueryRunner<'a>>,
 }
 
 impl<'a> DbQueryRunner<'a> {
     pub fn new(
         db: Database,
-        client_key: &'a RadixClientKey,
         server_key: &'a ServerKey,
         shortint_server_key: &'a tfhe::shortint::ServerKey,
         wopbs_key: &'a WopbsKey,
@@ -310,16 +302,12 @@ impl<'a> DbQueryRunner<'a> {
     ) -> Self {
         Self {
             server_key,
-            shortint_server_key,
-            wopbs_key,
-            wopbs_parameters,
             tables: db
                 .tables
                 .iter()
                 .map(|(_, t)| {
                     TableQueryRunner::new(
                         t.clone(),
-                        &client_key,
                         &server_key,
                         &shortint_server_key,
                         &wopbs_key,
