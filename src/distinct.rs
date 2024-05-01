@@ -41,7 +41,7 @@ impl<'a> TableQueryRunner<'a> {
             .into_iter()
             .map(|i| &result[i as usize])
             .fold(
-                FheBool::encrypt_trivial(false, &self.shortint_server_key),
+                FheBool::encrypt_trivial(false, self.shortint_server_key),
                 move |a, b| &a + b,
             )
     }
@@ -127,7 +127,7 @@ impl<'a> TableQueryRunner<'a> {
     ) -> Vec<FheBool<'a>> {
         let n = result.len();
         let mut compliant_result =
-            vec![FheBool::encrypt_trivial(false, &self.shortint_server_key); n];
+            vec![FheBool::encrypt_trivial(false, self.shortint_server_key); n];
 
         for (i, result_bool) in result.iter().enumerate() {
             let is_in_result =

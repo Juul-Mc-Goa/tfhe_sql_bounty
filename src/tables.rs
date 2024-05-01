@@ -91,6 +91,7 @@ impl From<&CellContent> for CellType {
 impl CellContent {
     /// Returns a `String` representation of its content.
     #[allow(dead_code)]
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         match self {
             Self::Bool(b) => format!("{b}"),
@@ -113,7 +114,7 @@ impl CellContent {
             Self::U8(u) => vec![*u as u64],
             Self::U16(u) => vec![*u as u64],
             Self::U32(u) => vec![*u as u64],
-            Self::U64(u) => vec![*u as u64],
+            Self::U64(u) => vec![*u],
             Self::I8(i) => vec![encode_signed(*i)],
             Self::I16(i) => vec![encode_signed(*i)],
             Self::I32(i) => vec![encode_signed(*i)],
@@ -222,12 +223,12 @@ fn read_headers(path: PathBuf) -> TableHeaders {
         .unwrap()
         .lines()
         .map(String::from)
-        .nth(0)
+        .next()
         .unwrap()
         .clone();
     let mut result: Vec<(String, CellType)> = Vec::new();
-    let mut header_split = header.split(',');
-    while let Some(column) = header_split.next() {
+    let header_split = header.split(',');
+    for column in header_split {
         if let (Some(label), Some(cell_type)) = {
             let mut split = column.split(':');
             (split.next(), split.next().map(CellType::from))
@@ -250,7 +251,7 @@ pub fn load_tables(path: PathBuf) -> Result<Database, Box<dyn std::error::Error>
         let table_path = table_file?.path();
         let table_name: String = table_path
             .file_stem()
-            .and_then(|f| f.to_str().map(|os_str| String::from(os_str)))
+            .and_then(|f| f.to_str().map(String::from))
             .expect("file name error {table_path}");
 
         let headers = read_headers(table_path.clone());
