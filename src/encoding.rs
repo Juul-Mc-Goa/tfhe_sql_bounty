@@ -86,12 +86,7 @@ pub fn decode_u64_string(v: Vec<u64>) -> String {
         .into()
 }
 
-#[allow(dead_code)]
-pub fn decode_entry(
-    headers: &TableHeaders,
-    entry: Vec<u64>,
-    projection: &[bool],
-) -> Vec<CellContent> {
+pub fn decode_cell(cell_type: CellType, encoded_cell: Vec<u64>) -> CellContent {
     let decode_i64 = |u: u64| {
         if u < (1 << 63) {
             -(u as i64)
@@ -99,31 +94,38 @@ pub fn decode_entry(
             (u - (1 << 63)) as i64
         }
     };
-    let mut entry_index = 0;
+    match cell_type {
+        CellType::Bool => CellContent::Bool(encoded_cell[0] != 0),
+        CellType::U8 => CellContent::U8(encoded_cell[0] as u8),
+        CellType::U16 => CellContent::U16(encoded_cell[0] as u16),
+        CellType::U32 => CellContent::U32(encoded_cell[0] as u32),
+        CellType::U64 => CellContent::U64(encoded_cell[0]),
+        CellType::I8 => CellContent::I8(decode_i64(encoded_cell[0]) as i8),
+        CellType::I16 => CellContent::I16(decode_i64(encoded_cell[0]) as i16),
+        CellType::I32 => CellContent::I32(decode_i64(encoded_cell[0]) as i32),
+        CellType::I64 => CellContent::I64(decode_i64(encoded_cell[0])),
+        CellType::ShortString => CellContent::ShortString(decode_u64_string(encoded_cell)),
+    }
+}
+
+#[allow(dead_code)]
+pub fn decode_entry(
+    headers: &TableHeaders,
+    entry: Vec<u64>,
+    projection: &[bool],
+) -> Vec<CellContent> {
     let mut result: Vec<CellContent> = Vec::with_capacity(headers.0.len());
-    for (i, (_column_name, cell_type)) in headers.0.iter().enumerate() {
+    for (i, (column_name, cell_type)) in headers.0.iter().enumerate() {
         if !projection[i] {
             continue;
         }
-        let new_cellcontent = match cell_type {
-            CellType::Bool => CellContent::Bool(entry[entry_index] != 0),
-            CellType::U8 => CellContent::U8(entry[entry_index] as u8),
-            CellType::U16 => CellContent::U16(entry[entry_index] as u16),
-            CellType::U32 => CellContent::U32(entry[entry_index] as u32),
-            CellType::U64 => CellContent::U64(entry[entry_index]),
-            CellType::I8 => CellContent::I8(decode_i64(entry[entry_index]) as i8),
-            CellType::I16 => CellContent::I16(decode_i64(entry[entry_index]) as i16),
-            CellType::I32 => CellContent::I32(decode_i64(entry[entry_index]) as i32),
-            CellType::I64 => CellContent::I64(decode_i64(entry[entry_index])),
-            CellType::ShortString => {
-                entry_index += 3;
-                CellContent::ShortString(decode_u64_string(
-                    entry[(entry_index - 3)..(entry_index + 1)].to_vec(),
-                ))
-            }
-        };
+        let cell_index = headers.index_of(column_name.to_string()).unwrap() as usize;
+        let cell_len = headers.type_of(column_name.to_string()).unwrap().len();
+        let new_cellcontent = decode_cell(
+            cell_type.clone(),
+            entry[cell_index..(cell_index + cell_len)].to_vec(),
+        );
         result.push(new_cellcontent);
-        entry_index += 1;
     }
     result
 }

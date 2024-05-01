@@ -59,6 +59,7 @@ pub enum U64SyntaxTree {
 pub struct ClearQuery {
     pub distinct: bool,
     pub projection: Vec<bool>,
+    pub sql_projection: Vec<sqlparser::ast::SelectItem>,
     pub table_selection: u8,
     pub where_condition: U64SyntaxTree,
 }
@@ -547,7 +548,7 @@ pub fn parse_query(query: sqlparser::ast::Select, headers: &DatabaseHeaders) -> 
             *p = true;
         });
     } else {
-        for select_item in query.projection {
+        for select_item in query.projection.clone() {
             match select_item {
                 SelectItem::UnnamedExpr(Expr::Identifier(id)) => {
                     let ident = id.value.clone();
@@ -574,6 +575,7 @@ pub fn parse_query(query: sqlparser::ast::Select, headers: &DatabaseHeaders) -> 
     ClearQuery {
         distinct,
         projection,
+        sql_projection: query.projection,
         table_selection,
         where_condition,
     }
