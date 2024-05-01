@@ -44,7 +44,7 @@ impl<'a> FheBool<'a> {
 
     /// A `FheBool` may not be an encryption of `0` or `1`. This method mutates
     /// such a `FheBool` by taking its residue mod 2.
-    pub fn into_boolean(&mut self) {
+    pub fn make_boolean(&mut self) {
         self.server_key
             .unchecked_scalar_bitand_assign(&mut self.ct, 1_u8)
     }
@@ -54,7 +54,7 @@ impl<'a> FheBool<'a> {
         num_blocks: usize,
         sks: &tfhe::integer::ServerKey,
     ) -> RadixCiphertext {
-        self.into_boolean();
+        self.make_boolean();
         BooleanBlock::new_unchecked(self.ct).into_radix(num_blocks, sks)
     }
 
@@ -91,7 +91,7 @@ impl<'a> FheBool<'a> {
                             ct_right.noise_degree().noise_level
                         };
 
-                        if is_operation_possible(&self.server_key, left_noise, right_noise) {
+                        if is_operation_possible(self.server_key, left_noise, right_noise) {
                             Some((bootstrap_left, bootstrap_right))
                         } else {
                             None
@@ -110,7 +110,7 @@ impl<'a, 'b> Not for &'b FheBool<'a> {
     fn not(self) -> Self::Output {
         FheBool {
             ct: self.server_key.unchecked_scalar_add(&self.ct, 1),
-            server_key: &self.server_key,
+            server_key: self.server_key,
         }
     }
 }

@@ -105,7 +105,7 @@ impl<'a> QueryLUT<'a> {
         // keyswitch to wopbs
         let wopbs_value = self
             .wopbs_key
-            .keyswitch_to_wopbs_params(self.server_key, &value);
+            .keyswitch_to_wopbs_params(self.server_key, value);
 
         let mut lut_at_index = self.lut.get_mut(index);
         let (mut mask, mut body) = lut_at_index.get_mut_mask_and_body();
@@ -290,6 +290,6 @@ impl<'a> QueryLUT<'a> {
     }
 
     pub fn keyswitch_to_pbs_params(&self, ct_in: &Ciphertext) -> Ciphertext {
-        keyswitch_to_pbs_params(&self.wopbs_key, ct_in)
+        keyswitch_to_pbs_params(self.wopbs_key, ct_in)
     }
 }

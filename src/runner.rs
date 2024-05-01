@@ -103,7 +103,7 @@ impl<'a> TableQueryRunner<'a> {
             content: table
                 .content
                 .iter()
-                .map(|entry| entry.iter().map(|cell| cell.encode()).flatten().collect())
+                .map(|entry| entry.iter().flat_map(|cell| cell.encode()).collect())
                 .collect::<Vec<Vec<u64>>>(),
             server_key,
             shortint_server_key,
@@ -180,7 +180,7 @@ impl<'a> TableQueryRunner<'a> {
     /// So a total of 8 PBS for each `EncryptedInstruction`.
     fn run_query_on_entry(
         &'a self,
-        entry: &Vec<u64>,
+        entry: &[u64],
         query: &'a EncryptedSyntaxTree,
         // query_lut: &mut QueryLUT,
     ) -> FheBool {
@@ -191,9 +191,9 @@ impl<'a> TableQueryRunner<'a> {
         let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key, &inner_wopbs);
         let mut query_lut: QueryLUT<'_> = QueryLUT::new(
             query.len(),
-            &shortint_sk,
+            shortint_sk,
             &inner_wopbs,
-            self.wopbs_parameters.clone(),
+            self.wopbs_parameters,
         );
 
         let new_fhe_bool = |ct: Ciphertext| FheBool {
@@ -281,8 +281,8 @@ impl<'a> TableQueryRunner<'a> {
             is_entry_in_result: bool_result,
             projection,
             content,
-            server_key: &self.server_key,
-            shortint_server_key: &self.shortint_server_key,
+            server_key: self.server_key,
+            shortint_server_key: self.shortint_server_key,
         }
     }
 }
@@ -308,9 +308,9 @@ impl<'a> DbQueryRunner<'a> {
                 .map(|(_, t)| {
                     TableQueryRunner::new(
                         t.clone(),
-                        &server_key,
-                        &shortint_server_key,
-                        &wopbs_key,
+                        server_key,
+                        shortint_server_key,
+                        wopbs_key,
                         wopbs_parameters,
                     )
                 })

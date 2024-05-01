@@ -155,6 +155,7 @@ impl ComparisonOp {
     }
 
     /// Creates a `String` representation of a `ComparisonOp` for debugging purposes.
+    #[allow(clippy::inherent_to_string)]
     fn to_string(&self) -> String {
         match self {
             ComparisonOp::Equal => "=",
@@ -174,13 +175,9 @@ impl U64Atom {
     }
 
     /// Creates a `String` representation of an atom for debugging purposes.
+    #[allow(clippy::inherent_to_string)]
     fn to_string(&self) -> String {
-        format!(
-            "{} {} {}",
-            self.index.to_string(),
-            self.op.to_string(),
-            self.value.to_string()
-        )
+        format!("{} {} {}", self.index, self.op.to_string(), self.value)
     }
 
     pub fn encode(&self) -> EncodedInstruction {
@@ -204,7 +201,7 @@ impl U64SyntaxTree {
     fn to_string_lines(&self, base_index: u8) -> Vec<String> {
         let indent_closure =
             |v: Vec<String>| v.iter().map(|s| format!("  {s}")).collect::<Vec<String>>();
-        let binary_op_closure = |op: &str, a: &Box<U64SyntaxTree>, b: &Box<U64SyntaxTree>| {
+        let binary_op_closure = |op: &str, a: &U64SyntaxTree, b: &U64SyntaxTree| {
             let b_base_index = a.index(base_index) + 1;
             let mut result = vec![format!("({}) {op}", self.index(base_index))];
             let mut left: Vec<String> = indent_closure(a.to_string_lines(base_index));
@@ -232,6 +229,7 @@ impl U64SyntaxTree {
 
     /// Stringifies a `U64SyntaxTree` for debugging purposes.
     #[allow(dead_code)]
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         self.to_string_lines(0).join("\n")
     }
@@ -354,7 +352,7 @@ impl U64SyntaxTree {
     pub fn encode_with_index(&self, base_index: u8) -> Vec<EncodedInstruction> {
         let mut result: Vec<EncodedInstruction> = Vec::new();
 
-        let mut add_node = |a: &Box<Self>, b: &Box<Self>, which_op: bool, negate: bool| {
+        let mut add_node = |a: &Self, b: &Self, which_op: bool, negate: bool| {
             result.append(&mut a.encode_with_index(base_index));
             let a_index = a.index(base_index);
             let b_index = b.index(a_index + 1);
@@ -392,7 +390,7 @@ impl U64SyntaxTree {
                     client_key.encrypt_one_block(is_node as u64),
                     client_key.encrypt_radix(left as u64, 4),
                     client_key.encrypt_one_block(which_op as u64),
-                    client_key.encrypt_radix(right as u64, 32),
+                    client_key.encrypt_radix(right, 32),
                     client_key.encrypt_one_block(negate as u64),
                 )
             })
@@ -504,7 +502,7 @@ impl ClearQuery {
             })
             .collect();
         let table_selection = client_key.encrypt_radix(self.table_selection, 4);
-        let where_condition = self.where_condition.encrypt(&client_key);
+        let where_condition = self.where_condition.encrypt(client_key);
         EncryptedQuery {
             distinct,
             projection,
@@ -515,12 +513,12 @@ impl ClearQuery {
 
     /// Pretty-printing
     pub fn pretty(&self) -> String {
-        vec![
-            format!("ClearQuery:"),
+        [
+            "ClearQuery:".to_string(),
             format!("  distinct: {}", self.distinct),
             format!("  projection: {:?}", self.projection),
             format!("  table selection: {}", self.table_selection),
-            format!("  where condition:"),
+            "  where condition:".to_string(),
             self.where_condition.to_string(),
         ]
         .join("\n")
@@ -591,13 +589,12 @@ pub fn parse_query(query: sqlparser::ast::Select, headers: &DatabaseHeaders) -> 
 /// A [`ClearQuery`].
 pub fn parse_query_from_file(path: PathBuf, headers: &DatabaseHeaders) -> ClearQuery {
     let dialect = GenericDialect {};
-    let str_query = read_to_string(path.clone()).expect(
-        format!(
+    let str_query = read_to_string(path.clone()).unwrap_or_else(|_| {
+        panic!(
             "Could not load query file at {}",
             path.to_str().expect("invalid Unicode for {path:?}")
         )
-        .as_str(),
-    );
+    });
     let ast = Parser::parse_sql(&dialect, &str_query).unwrap();
     let statement = ast[0].clone();
     match statement {

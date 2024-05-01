@@ -127,6 +127,7 @@ pub fn cmux_tree_recursive_scratch<Scalar>(
     ])
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimized<
     InputCont,
     BskCont,
@@ -160,6 +161,7 @@ pub fn circuit_bootstrap_boolean_vertical_packing_lwe_ciphertext_list_mem_optimi
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn circuit_bootstrap_boolean_vertical_packing(
     hidden_function_lut: GlweCiphertextList<&[u64]>,
     fourier_bsk: FourierLweBootstrapKeyView<'_>,
@@ -355,6 +357,7 @@ pub fn cmux_tree_recursive(
         ciphertext_modulus,
     );
 
+    #[allow(clippy::too_many_arguments)]
     fn recursive_cmux<'a>(
         lut: &GlweCiphertextList<&[u64]>,
         layers_glwe: &mut GlweCiphertextList<&mut [u64]>,
@@ -393,8 +396,8 @@ pub fn cmux_tree_recursive(
                 tail,
                 current_lut_index,
                 new_bit_significance,
-                ciphertext_modulus.clone(),
-                polynomial_size.clone(),
+                ciphertext_modulus,
+                polynomial_size,
                 fft,
                 stack.rb_mut(),
             );
@@ -429,8 +432,8 @@ pub fn cmux_tree_recursive(
                     tail,
                     other_lut_index,
                     new_bit_significance,
-                    ciphertext_modulus.clone(),
-                    polynomial_size.clone(),
+                    ciphertext_modulus,
+                    polynomial_size,
                     fft,
                     stack.rb_mut(),
                 );
@@ -513,7 +516,7 @@ pub fn keyswitch_to_pbs_params(wopbs_key: &WopbsKey, ct_in: &Ciphertext) -> Ciph
             let acc = wopbs_key.pbs_server_key.generate_lookup_table(|x| x);
 
             // compute key switch
-            keyswitch_lwe_ciphertext(&ksk, &ct_in.ct, &mut lwe_after_ks);
+            keyswitch_lwe_ciphertext(ksk, &ct_in.ct, &mut lwe_after_ks);
 
             // perform bootstrap
             if *deterministic_execution {

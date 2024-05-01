@@ -285,7 +285,7 @@ impl U64SyntaxTree {
                     (QueryLanguage::Symbol(s), QueryLanguage::Num(u)) => {
                         let str_index = &s.as_str()[3..];
                         let index = str::parse::<u8>(str_index)
-                            .expect(format!("Could not parse id '{str_index}'").as_str());
+                            .unwrap_or_else(|_| panic!("Could not parse id '{str_index}'"));
                         let value = *u;
                         U64SyntaxTree::Atom(U64Atom { index, op, value })
                     }

@@ -27,7 +27,7 @@ pub struct EntryLUT<'a> {
 
 impl<'a> EntryLUT<'a> {
     pub fn new(
-        entry: &'a Vec<u64>,
+        entry: &'a [u64],
         server_key: &'a ServerKey,
         wopbs_key: &'a WopbsKey,
         inner_wopbs_key: &'a tfhe::shortint::wopbs::WopbsKey,
@@ -41,7 +41,7 @@ impl<'a> EntryLUT<'a> {
         let f = |u: u64| -> u64 {
             let v = u as usize;
             if v < entry_length {
-                entry[v] as u64
+                entry[v]
             } else {
                 0
             }
@@ -108,7 +108,7 @@ impl<'a> EntryLUT<'a> {
     }
 
     pub fn keyswitch_block_to_pbs_params(&self, ct_in: &Ciphertext) -> Ciphertext {
-        keyswitch_to_pbs_params(&self.inner_wopbs_key, ct_in)
+        keyswitch_to_pbs_params(self.inner_wopbs_key, ct_in)
     }
 
     pub fn keyswitch_to_pbs_params<'b, T>(&self, ct_in: &'b T) -> T

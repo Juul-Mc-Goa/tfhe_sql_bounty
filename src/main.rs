@@ -402,7 +402,7 @@ fn encrypt_query<'a>(
     shortint_sk: &'a tfhe::shortint::ServerKey,
     headers: &'a DatabaseHeaders,
 ) -> EncryptedQuery<'a> {
-    query::parse_query(query, headers).encrypt(&client_key, shortint_sk)
+    query::parse_query(query, headers).encrypt(client_key, shortint_sk)
 }
 
 /// # Inputs:
@@ -554,7 +554,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query_path = cli.query_file;
 
     // load db, parse query
-    let db = load_tables(db_dir_path.into()).expect("Failed to load DB at {db_dir_path}");
+    let db = load_tables(db_dir_path).expect("Failed to load DB at {db_dir_path}");
     let headers = db.headers();
     let query = parse_query_from_file(query_path, &headers);
     println!("\n{}\n", query.pretty());
