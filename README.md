@@ -1,3 +1,5 @@
+*This README is an edited version of the crate's documentation.*
+
 Computes encrypted queries homomorphically.
 
 # Main logic
