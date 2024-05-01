@@ -78,7 +78,7 @@ Conjunctive/Disjunctive Normal Form, then this choice is less performant,
 and better otherwise.
 
 > [!NOTE]
-> Notation
+> **Notation**
 > As performing arbitrary boolean circuit and using registers to store
 > values sounds a lot like a minimal processor, each element of an
 > `EncryptedSyntaxTree` is called an "instruction".
@@ -312,11 +312,15 @@ This requires two multiplications (thus 2 PBS), plus 3 additions.
 
 One can reduce to only one multiplication using de Morgan's law:
 
-$ a \text{ OR } b = \neg (\neg a \text{ AND } \neg b),$
+``` math
+a \text{ OR } b = \neg (\neg a \text{ AND } \neg b),
+```
 
 which can also be written as:
 
-$ a + b + ab = (a+1)(b+1) + 1 \thickspace (\text{mod } 2) $
+``` math
+ a + b + ab = (a+1)(b+1) + 1 \thickspace (\text{mod } 2)
+```
 
 Replacing:
 * $a$ by `left`,
@@ -329,8 +333,8 @@ result = (left + which_op) * (right + which_op) + which_op + negate
 ```
 which means 1 PBS, 4 additions.
 This implicitly uses that:
-```
-(which_op * which_op) = which_op    (mod 2)
+```math
+which_op * which_op = which_op    (mod 2)
 ```
 
 > [!WARNING]
