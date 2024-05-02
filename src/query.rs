@@ -177,7 +177,7 @@ impl U64Atom {
     /// Creates a `String` representation of an atom for debugging purposes.
     #[allow(clippy::inherent_to_string)]
     fn to_string(&self) -> String {
-        format!("{} {} {}", self.index, self.op.to_string(), self.value)
+        format!("id_{} {} {}", self.index, self.op.to_string(), self.value)
     }
 
     pub fn encode(&self) -> EncodedInstruction {

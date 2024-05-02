@@ -525,7 +525,8 @@ fn decrypt_result(
 ) -> String {
     let mut result_vec: Vec<String> = Vec::new();
     for (k, v) in decrypt_result_to_hashmap(client_key, result, headers, query).iter() {
-        result_vec.push(k.repeat(*v as usize));
+        // repeat the key as many times as it should appear in the result String
+        result_vec.append(&mut vec![k.clone(); *v as usize]);
     }
     result_vec.join("\n")
 }
@@ -573,15 +574,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let headers = db.headers();
     let query = parse_query_from_file(query_path, &headers);
     println!("\n{}\n", query.pretty());
-
-    // let (_, table) = db.tables[query.table_selection as usize].clone();
-    // let query_runner = TableQueryRunner::new(
-    //     table,
-    //     client_key.as_ref(),
-    //     &server_key,
-    //     &wopbs_key,
-    //     wopbs_params,
-    // );
 
     let query_runner = DbQueryRunner::new(
         db,

@@ -1,1 +1,1 @@
-SELECT DISTINCT * FROM table_2 WHERE age > 0
+SELECT DISTINCT thinks_is_jesus FROM table_2 where last_name="Macron"

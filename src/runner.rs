@@ -222,6 +222,8 @@ impl<'a> TableQueryRunner<'a> {
 
         // else, loop through all atoms
         for (index, (is_node, left, which_op, right, negate)) in query.iter().enumerate() {
+            println!("instruction {index}...");
+            let timer = std::time::Instant::now();
             let (is_node, which_op, negate) = (
                 new_fhe_bool(is_node.clone()),
                 new_fhe_bool(which_op.clone()),
@@ -242,6 +244,11 @@ impl<'a> TableQueryRunner<'a> {
             result_bool = &atom_bool + is_node * (node_bool + &atom_bool) + negate;
 
             query_lut.update(index as u8, &result_bool);
+            let entry_duration = timer.elapsed();
+            println!(
+                "intruction {index} done. runtime {}",
+                entry_duration.as_secs_f32()
+            );
         }
         result_bool
     }
@@ -259,21 +266,31 @@ impl<'a> TableQueryRunner<'a> {
             .map(|b| b.ct)
             .collect::<Vec<_>>();
 
+        println!("running the query on all tables...");
+        let timer = std::time::Instant::now();
         let tmp_result: Vec<FheBool> = self
             .content
             .par_iter()
             .map(|entry| self.run_query_on_entry(entry, &query.where_condition))
             .collect();
+        let query_duration = timer.elapsed();
+        println!("query done. (runtime: {})", query_duration.as_secs_f32());
 
         println!("complying with DISTINCT...");
+        let timer = std::time::Instant::now();
         let bool_result = self
             .comply_with_distinct_bool(&query.distinct, &query.projection, tmp_result.as_slice())
             .into_iter()
             .map(|b| b.ct)
             .collect::<Vec<_>>();
-        println!("...DONE.");
+        let distinct_duration = timer.elapsed();
+        println!(
+            "...DISTINCT done.(runtime: {})",
+            distinct_duration.as_secs_f32()
+        );
 
         println!("creating trivial encryptions...");
+        let timer = std::time::Instant::now();
         let content = self
             .content
             .iter()
@@ -284,7 +301,11 @@ impl<'a> TableQueryRunner<'a> {
                     .collect()
             })
             .collect();
-        println!("...done.");
+        let encryption_duration = timer.elapsed();
+        println!(
+            "...encryption done. (runtime: {})",
+            encryption_duration.as_secs_f32()
+        );
 
         EncryptedResult {
             is_entry_in_result: bool_result,
@@ -382,13 +403,23 @@ impl<'a> DbQueryRunner<'a> {
 
                     // multiply by 0 or 1
                     println!("multiplying everything by 0 or 1...");
+                    let timer = std::time::Instant::now();
                     result.block_mul_assign(&is_correct_table);
-                    println!("...done.");
+                    let mul_assign_duration = timer.elapsed();
+                    println!(
+                        "...multiplication done. (runtime: {})",
+                        mul_assign_duration.as_secs_f32()
+                    );
 
                     // resize result so that every result have the same dimensions
                     println!("resizing...");
+                    let timer = std::time::Instant::now();
                     result.resize(self.output_length(), self.output_width());
-                    println!("...done.");
+                    let resize_duration = timer.elapsed();
+                    println!(
+                        "...resize done. (runtime {})",
+                        resize_duration.as_secs_f32()
+                    );
 
                     result
                 })
@@ -397,10 +428,15 @@ impl<'a> DbQueryRunner<'a> {
             // then sum each table
             let mut acc: EncryptedResult = result_vec.swap_remove(0);
             println!("combining table results...");
+            let timer = std::time::Instant::now();
             for table in result_vec {
                 acc.add_assign(&table)
             }
-            println!("...done.");
+            let add_duration = timer.elapsed();
+            println!(
+                "...combining done. (runtime: {})",
+                add_duration.as_secs_f32()
+            );
             acc
         }
     }
