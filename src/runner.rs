@@ -29,8 +29,7 @@ impl<'a> EncryptedResult<'a> {
         self.content
             .iter_mut()
             .for_each(|entry| entry.resize(width, value_radix.clone()));
-        self.content
-            .resize(length, vec![value_radix.clone(); width]);
+        self.content.resize(length, vec![value_radix; width]);
     }
 
     /// Multiply each stored `Ciphertext` or `RadixCiphertext` by a given `Ciphertext`.
