@@ -87,13 +87,7 @@ pub fn decode_u64_string(v: Vec<u64>) -> String {
 }
 
 pub fn decode_cell(cell_type: CellType, encoded_cell: Vec<u64>) -> CellContent {
-    let decode_i64 = |u: u64| {
-        if u < (1 << 63) {
-            -(u as i64)
-        } else {
-            (u - (1 << 63)) as i64
-        }
-    };
+    let decode_i64 = |u: u64| (u ^ (1 << 63)) as i64;
     match cell_type {
         CellType::Bool => CellContent::Bool(encoded_cell[0] != 0),
         CellType::U8 => CellContent::U8(encoded_cell[0] as u8),

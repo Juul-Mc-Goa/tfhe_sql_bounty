@@ -4,7 +4,7 @@ use tfhe::integer::{RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, WopbsParameters};
 
 use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
-use crate::{Database, Table};
+use crate::{Database, Table, TableHeaders};
 use crate::{EncryptedQuery, EncryptedSyntaxTree};
 
 /// A result of a SQL query.
@@ -87,6 +87,7 @@ impl<'a> EncryptedResult<'a> {
 ///
 /// Each entry is stored as a `Vec<u64>`. A table is a vector of entries.
 pub struct TableQueryRunner<'a> {
+    pub headers: TableHeaders,
     pub content: Vec<Vec<u64>>,
     pub server_key: &'a ServerKey,
     pub shortint_server_key: &'a tfhe::shortint::ServerKey,
@@ -103,6 +104,7 @@ impl<'a> TableQueryRunner<'a> {
         wopbs_parameters: WopbsParameters,
     ) -> Self {
         Self {
+            headers: table.headers.clone(),
             content: table
                 .content
                 .iter()
@@ -263,12 +265,15 @@ impl<'a> TableQueryRunner<'a> {
             .map(|entry| self.run_query_on_entry(entry, &query.where_condition))
             .collect();
 
+        println!("complying with DISTINCT...");
         let bool_result = self
             .comply_with_distinct_bool(&query.distinct, &query.projection, tmp_result.as_slice())
             .into_iter()
             .map(|b| b.ct)
             .collect::<Vec<_>>();
+        println!("...DONE.");
 
+        println!("creating trivial encryptions...");
         let content = self
             .content
             .iter()
@@ -279,6 +284,7 @@ impl<'a> TableQueryRunner<'a> {
                     .collect()
             })
             .collect();
+        println!("...done.");
 
         EncryptedResult {
             is_entry_in_result: bool_result,
@@ -375,10 +381,14 @@ impl<'a> DbQueryRunner<'a> {
                     let mut result = table.run_query(query);
 
                     // multiply by 0 or 1
+                    println!("multiplying everything by 0 or 1...");
                     result.block_mul_assign(&is_correct_table);
+                    println!("...done.");
 
                     // resize result so that every result have the same dimensions
+                    println!("resizing...");
                     result.resize(self.output_length(), self.output_width());
+                    println!("...done.");
 
                     result
                 })
@@ -386,9 +396,11 @@ impl<'a> DbQueryRunner<'a> {
 
             // then sum each table
             let mut acc: EncryptedResult = result_vec.swap_remove(0);
+            println!("combining table results...");
             for table in result_vec {
                 acc.add_assign(&table)
             }
+            println!("...done.");
             acc
         }
     }

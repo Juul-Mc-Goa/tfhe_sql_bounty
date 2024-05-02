@@ -321,6 +321,8 @@ impl U64SyntaxTree {
         // use an Extractor to pick the best element
         let extractor = Extractor::new(&runner.egraph, CostFn);
         let (_, best) = extractor.find_best(root);
+
+        println!("simplified query to: \n{}", best.pretty(10));
         Self::from_recexpr(best)
     }
 }

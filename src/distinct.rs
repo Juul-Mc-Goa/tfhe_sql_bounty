@@ -58,21 +58,35 @@ impl<'a> TableQueryRunner<'a> {
         &'a self,
         index: u8,
         clear_projection: Vec<bool>,
+        current_column: u8,
         projection: &[FheBool<'a>],
         result: &[FheBool<'a>],
     ) -> FheBool<'a> {
-        if projection.is_empty() {
+        if projection.is_empty() || current_column == self.headers.0.len() as u8 {
             self.sum_same_projection(index, clear_projection, result)
         } else {
+            // factor unneeded cmuxes when the cell type is ShortString
+            let current_len = self.headers.0[current_column as usize].1.len();
+
             let mut first_proj = clear_projection.clone();
-            first_proj.push(false);
-            let false_case =
-                self.recursive_cmux_distinct(index, first_proj, &projection[1..], result);
+            first_proj.append(&mut vec![false; current_len]);
+            let false_case = self.recursive_cmux_distinct(
+                index,
+                first_proj,
+                current_column + 1,
+                &projection[current_len..],
+                result,
+            );
 
             let mut second_proj = clear_projection;
-            second_proj.push(true);
-            let true_case =
-                self.recursive_cmux_distinct(index, second_proj, &projection[1..], result);
+            second_proj.append(&mut vec![true; current_len]);
+            let true_case = self.recursive_cmux_distinct(
+                index,
+                second_proj,
+                current_column + 1,
+                &projection[current_len..],
+                result,
+            );
             // cmux(projection[0], true_case, false_case)
             &false_case + &projection[0] * (true_case + &false_case)
         }
@@ -107,7 +121,7 @@ impl<'a> TableQueryRunner<'a> {
         projection: &[FheBool<'a>],
         result: &[FheBool<'a>],
     ) -> FheBool<'a> {
-        self.recursive_cmux_distinct(index, Vec::new(), projection, result)
+        self.recursive_cmux_distinct(index, Vec::new(), 0, projection, result)
     }
 
     /// Given:
