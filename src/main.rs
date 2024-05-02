@@ -286,8 +286,8 @@
 //!     + $a \times b = a \text{ AND } b$.
 //!
 //! However, `tfhe::FheBool` uses lookup tables for its implementation of
-//! `BitXor` and `Not`. So we recreate our own `FheBool` in the `cipher_structs`
-//! module. Then we rewrite:
+//! `BitXor`. So we recreate our own `FheBool` in the `cipher_structs` module.
+//! Then we rewrite:
 //!
 //! $(a \text{ OR } b) \rightarrow (a + b + a \times b)$
 //!
