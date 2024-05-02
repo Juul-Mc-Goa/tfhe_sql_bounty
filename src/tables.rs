@@ -185,7 +185,7 @@ pub struct Table {
 /// A list of pairs `(table_name, headers)`.
 pub struct DatabaseHeaders(pub Vec<(String, TableHeaders)>);
 
-/// A vector of tuples `(table_name, table)`, plus a `ServerKey` and a `WopbsKey`.
+/// A vector of tuples `(table_name, table)`.
 pub struct Database {
     pub tables: Vec<(String, Table)>,
 }

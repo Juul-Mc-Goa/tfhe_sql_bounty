@@ -16,6 +16,11 @@ See [Encoding `value`](#encoding-value) for more details.
 transforms binary operators like `<, =, >=, !=` into formulas where only
 the two operators `=, <=` are used. See [Encoding `op`](#encoding-op) for more.
 4. The output vector is then encrypted and sent to the server.
+5. When receiving the response from the server, the client decrypts only the
+necessary entries and columns based on the two attributes
+`encrypted_result.is_entry_in_result` and `encrypted_result.projection`.  Then
+the initial (clear) query sent to the server is used to rearrange the columns as
+requested by the query. See `decrypt_result_to_hashmap`.
 
 ## Server
 A provided database is handled as a structure `Database`, which is a list of
@@ -29,6 +34,17 @@ step 1.  Step 2 is mainly a cmux tree of depth equals to the number of
 columns: the only other operations done during this step are computing sums
 of ciphertexts, which should not be too expensive (in terms of cpu load).
 See the docs for `TableQueryRunner::is_entry_already_in_result`.
+
+After each `TableQueryRunner` finished its computations, the result of which
+is roughly stored as a `Vec<Vec<RadixCipherText>>`, they are combined into
+one:
+* each table result is resized to the maximum table length / maximum column
+width,
+* each of its element is multiplied by an encryption of `current_table ==
+selected_table`,
+* all `Vec<Vec<RadixCiphertext>>` are summed element-wise.
+
+See `DbQueryRunner::run_query`.
 
 ## Documentation
 As much of this project's logic is dictated by how a query is encrypted and

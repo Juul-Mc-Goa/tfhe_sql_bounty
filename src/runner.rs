@@ -9,8 +9,11 @@ use crate::{EncryptedQuery, EncryptedSyntaxTree};
 
 /// A result of a SQL query.
 pub struct EncryptedResult<'a> {
+    /// Contains one encrypted boolean for each entry.
     pub is_entry_in_result: Vec<Ciphertext>,
+    /// Contains one encrypted boolean for each column.
     pub projection: Vec<Ciphertext>,
+    /// Contains one encrypted `u64` for each cell.
     pub content: Vec<Vec<RadixCiphertext>>,
     pub server_key: &'a ServerKey,
     pub shortint_server_key: &'a tfhe::shortint::ServerKey,
@@ -79,7 +82,8 @@ impl<'a> EncryptedResult<'a> {
     }
 }
 
-/// An encoded representation of a SQL table.
+/// An encoded representation of a SQL table, plus a bunch of server keys used
+/// during computations.
 ///
 /// Each entry is stored as a `Vec<u64>`. A table is a vector of entries.
 pub struct TableQueryRunner<'a> {
@@ -286,6 +290,9 @@ impl<'a> TableQueryRunner<'a> {
     }
 }
 
+/// A collection of [`TableQueryRunner`]s. The `server_key` attribute is used to
+/// combine the various table results inside the method
+/// [`DbQueryRunner::run_query`].
 pub struct DbQueryRunner<'a> {
     pub server_key: &'a ServerKey,
     pub tables: Vec<TableQueryRunner<'a>>,
