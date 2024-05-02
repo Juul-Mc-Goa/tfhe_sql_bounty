@@ -225,7 +225,7 @@ let (which_op, negate, encoded_val) = match op {
 > integer.
 > 
 > Thus simplifying such trivial queries is required before encoding. See
-> [`simplify_query`].
+> `simplify_query`.
 
 ### Encoding `value`
 Every value in an encoded instruction is of type `u64`. Casting unsigned integers
