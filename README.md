@@ -20,7 +20,7 @@ the two operators `=, <=` are used. See [Encoding `op`](#encoding-op) for more.
 ## Server
 A provided database is handled as a structure `Database`, which is a list of
 `Table`s. Each table is then used to build a
-`TableQueryRunner`, which provides the `run_fhe_query` method. This method:
+`TableQueryRunner`, which provides the `run_query` method. This method:
 1. runs the encrypted query on the table, ignoring the optional `DISTINCT` flag,
 2. post-process the result to make it compliant with that flag.
 
