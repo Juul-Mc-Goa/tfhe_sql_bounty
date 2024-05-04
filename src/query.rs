@@ -605,34 +605,3 @@ pub fn parse_query_from_file(path: PathBuf, headers: &DatabaseHeaders) -> ClearQ
         _ => panic!("unknown statement: {statement:?}"),
     }
 }
-
-#[cfg(test)]
-pub mod tests {
-    use super::*;
-
-    // #[test]
-    // fn print_query() {
-    //     let query_path = PathBuf::from("query.txt");
-    //     let query = build_where_syntax_tree(parse_query(query_path));
-
-    //     println!("query: \n{}\n", query.to_string());
-    // }
-
-    // #[test]
-    // pub fn encode_short_string() {
-    //     let dialect = GenericDialect {};
-    //     let str_query = "SELECT * from table_1 WHERE some_str=\"first_line\"";
-    //     let ast = Parser::parse_sql(&dialect, &str_query).unwrap();
-    //     let query = build_where_syntax_tree(ast[0].clone());
-    //     let headers = TableHeaders(vec![
-    //         ("some_int".to_string(), CellType::U32),
-    //         ("some_bool".to_string(), CellType::Bool),
-    //         ("some_str".to_string(), CellType::ShortString),
-    //     ]);
-    //     let encoded_query = query.encode(&headers);
-    //     if let WhereSyntaxTree::Atom(a) = query {
-    //         println!("encoded short string: {:?}", a.value.encode());
-    //     }
-    //     encoded_query.iter().for_each(|a| println!("{a:?}"));
-    // }
-}

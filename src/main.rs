@@ -372,9 +372,10 @@ use sqlparser::ast::{Expr, SelectItem};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
+use tfhe::shortint::parameters::CiphertextConformanceParams;
 
 use tfhe::integer::{gen_keys_radix, wopbs::WopbsKey, ClientKey, RadixClientKey, ServerKey};
-use tfhe::shortint::{ServerKey as ShortintSK, WopbsParameters};
+use tfhe::shortint::{PBSParameters, ServerKey as ShortintSK, WopbsParameters};
 
 mod cipher_structs;
 mod distinct;
@@ -414,7 +415,7 @@ struct Cli {
 fn encrypt_query<'a>(
     query: sqlparser::ast::Select,
     client_key: &'a ClientKey,
-    shortint_sk: &'a tfhe::shortint::ServerKey,
+    shortint_sk: &'a ShortintSK,
     headers: &'a DatabaseHeaders,
 ) -> EncryptedQuery<'a> {
     query::parse_query(query, headers).encrypt(client_key, shortint_sk)
@@ -514,7 +515,7 @@ fn decrypt_result_to_hashmap(
     hashmap
 }
 
-/// The output of this function should be a string using the CSV format
+/// The output of this function is a string using the CSV format
 /// You should provide a way to compare this string with the output of
 /// the clear DB system you use for comparison
 fn decrypt_result(
@@ -532,6 +533,22 @@ fn decrypt_result(
 }
 
 #[allow(dead_code)]
+fn default_cpu_parameters() -> PBSParameters {
+    // uncomment the one you want to use
+    use tfhe::shortint::parameters::{
+        PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+        // PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
+        // PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
+    };
+    PBSParameters::PBS(PARAM_MESSAGE_2_CARRY_2_KS_PBS)
+    // PBSParameters::MultiBitPBS(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS)
+    // PBSParameters::MultiBitPBS(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS)
+}
+
+/// Generates all necessary keys.
+///
+/// The integer `ServerKey` is cloned and turned into a shortint `ServerKey`.
+#[allow(dead_code)]
 fn generate_keys() -> (
     RadixClientKey,
     ServerKey,
@@ -541,17 +558,13 @@ fn generate_keys() -> (
 ) {
     // KeyGen...
     // (insert Waifu + 8-bit music here)
-    use tfhe::shortint::parameters::{
-        parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-        PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-        // PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-        // PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-    };
-    let (ck, sk) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 16);
-    // let (ck, sk) = gen_keys_radix(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS, 16);
-    // let (ck, sk) = gen_keys_radix(PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS, 16);
+    let (ck, sk) = gen_keys_radix(default_cpu_parameters(), 16);
+    // we will need access to the underlying shortint server key, which is
+    // a private attribute, and can only be accessed by calling sk.into_raw_parts()
     let shortint_server_key = sk.clone().into_raw_parts();
 
+    // WoPBS parameters for the lookup tables
+    use tfhe::shortint::parameters::parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     let wopbs_parameters = WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &wopbs_parameters);
 
@@ -603,9 +616,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Results match: TODO");
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    // use super::*;
 }

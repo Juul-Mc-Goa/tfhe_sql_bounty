@@ -271,9 +271,3 @@ pub fn load_tables(path: PathBuf) -> Result<Database, Box<dyn std::error::Error>
     }
     Ok(Database { tables: result })
 }
-
-#[cfg(test)]
-mod tests {
-    // use super::*;
-    // use crate::generate_keys;
-}

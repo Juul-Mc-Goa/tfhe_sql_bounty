@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 use tfhe::integer::wopbs::WopbsKey;
 use tfhe::integer::{RadixCiphertext, ServerKey};
-use tfhe::shortint::{Ciphertext, WopbsParameters};
+use tfhe::shortint::{Ciphertext, ServerKey as ShortintSK, WopbsParameters};
 
 use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
 use crate::{Database, Table, TableHeaders};
@@ -15,8 +15,10 @@ pub struct EncryptedResult<'a> {
     pub projection: Vec<Ciphertext>,
     /// Contains one encrypted `u64` for each cell.
     pub content: Vec<Vec<RadixCiphertext>>,
+    /// The server key used for computing over `RadixCipherText`s.
     pub server_key: &'a ServerKey,
-    pub shortint_server_key: &'a tfhe::shortint::ServerKey,
+    /// The server key used for computing over `CipherText`s.
+    pub shortint_server_key: &'a ShortintSK,
 }
 
 impl<'a> EncryptedResult<'a> {
@@ -90,7 +92,7 @@ pub struct TableQueryRunner<'a> {
     pub headers: TableHeaders,
     pub content: Vec<Vec<u64>>,
     pub server_key: &'a ServerKey,
-    pub shortint_server_key: &'a tfhe::shortint::ServerKey,
+    pub shortint_server_key: &'a ShortintSK,
     pub wopbs_key: &'a WopbsKey,
     pub wopbs_parameters: WopbsParameters,
 }
@@ -99,7 +101,7 @@ impl<'a> TableQueryRunner<'a> {
     pub fn new(
         table: Table,
         server_key: &'a ServerKey,
-        shortint_server_key: &'a tfhe::shortint::ServerKey,
+        shortint_server_key: &'a ShortintSK,
         wopbs_key: &'a WopbsKey,
         wopbs_parameters: WopbsParameters,
     ) -> Self {
@@ -329,7 +331,7 @@ impl<'a> DbQueryRunner<'a> {
     pub fn new(
         db: Database,
         server_key: &'a ServerKey,
-        shortint_server_key: &'a tfhe::shortint::ServerKey,
+        shortint_server_key: &'a ShortintSK,
         wopbs_key: &'a WopbsKey,
         wopbs_parameters: WopbsParameters,
     ) -> Self {

@@ -1,9 +1,7 @@
-use tfhe::integer::BooleanBlock;
-use tfhe::integer::RadixCiphertext;
-use tfhe::integer::RadixClientKey;
 use tfhe::shortint::ciphertext::NoiseLevel;
-use tfhe::shortint::Ciphertext;
-use tfhe::shortint::ServerKey;
+use tfhe::shortint::{Ciphertext, ServerKey as ShortintSK};
+
+use tfhe::integer::{BooleanBlock, RadixCiphertext, RadixClientKey};
 
 use std::ops::{Add, AddAssign, Mul, Not};
 
@@ -22,12 +20,12 @@ use std::ops::{Add, AddAssign, Mul, Not};
 #[derive(Clone)]
 pub struct FheBool<'a> {
     pub ct: Ciphertext,
-    pub server_key: &'a tfhe::shortint::ServerKey,
+    pub server_key: &'a ShortintSK,
 }
 
 impl<'a> FheBool<'a> {
     /// Encrypts a boolean with the given client key.
-    pub fn encrypt(val: bool, client_key: &'a RadixClientKey, server_key: &'a ServerKey) -> Self {
+    pub fn encrypt(val: bool, client_key: &'a RadixClientKey, server_key: &'a ShortintSK) -> Self {
         Self {
             ct: client_key.encrypt_bool(val).into_inner(),
             server_key,
@@ -35,7 +33,7 @@ impl<'a> FheBool<'a> {
     }
 
     /// Trivially encrypts a boolean.
-    pub fn encrypt_trivial(val: bool, server_key: &'a ServerKey) -> Self {
+    pub fn encrypt_trivial(val: bool, server_key: &'a ShortintSK) -> Self {
         Self {
             ct: server_key.create_trivial(val as u64),
             server_key,
@@ -49,11 +47,7 @@ impl<'a> FheBool<'a> {
             .unchecked_scalar_bitand_assign(&mut self.ct, 1_u8)
     }
 
-    pub fn into_radix(
-        mut self,
-        num_blocks: usize,
-        sks: &tfhe::integer::ServerKey,
-    ) -> RadixCiphertext {
+    pub fn into_radix(mut self, num_blocks: usize, sks: ShortintSK) -> RadixCiphertext {
         self.make_boolean();
         BooleanBlock::new_unchecked(self.ct).into_radix(num_blocks, sks)
     }
@@ -71,7 +65,7 @@ impl<'a> FheBool<'a> {
         &self,
         ct_left: &Ciphertext,
         ct_right: &Ciphertext,
-        is_operation_possible: impl Fn(&ServerKey, NoiseLevel, NoiseLevel) -> bool + Copy,
+        is_operation_possible: impl Fn(&ShortintSK, NoiseLevel, NoiseLevel) -> bool + Copy,
     ) -> Option<(bool, bool)> {
         [false, true]
             .into_iter()
