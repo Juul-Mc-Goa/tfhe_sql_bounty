@@ -6,9 +6,9 @@ use tfhe::integer::{IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, 
 use crate::cipher_structs::recursive_cmux_tree::keyswitch_to_pbs_params;
 use rayon::prelude::*;
 
-/// A lookup table, taking (encrypted) `u8` as input, returning (encrypted) `u32`s.
+/// A lookup table, taking (encrypted) `u8` as input, returning (encrypted) `u64`s.
 ///
-/// Internally, this just stores four `u8 -> u8` lookup tables.
+/// Internally, this just stores eight `u8 -> u8` lookup tables.
 pub struct EntryLUT<'a> {
     lut: (
         IntegerWopbsLUT,
@@ -46,8 +46,8 @@ impl<'a> EntryLUT<'a> {
                 0
             }
         };
-        // the input argument to f will be an u8, the output will be an u32,
-        // so we decompose one u32 as four u8
+        // the input argument to f will be an u8, the output will be an u64,
+        // so we decompose one u64 as eight u8
         let f0 = |u: u64| -> u64 { f(u) % 256 }; // lsb
         let f1 = |u: u64| -> u64 { (f(u) >> 8) % 256 };
         let f2 = |u: u64| -> u64 { (f(u) >> 16) % 256 };

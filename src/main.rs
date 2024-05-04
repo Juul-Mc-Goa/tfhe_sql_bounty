@@ -102,6 +102,16 @@
 //!
 //! </div>
 //!
+//! ## Storing indices as `u8`
+//! In this project, every index is supposed to be smaller than 256. This restricts the size
+//! of the following structures:
+//! * [`EncodedInstruction`]: the second element of the tuple is an `u8`, which
+//! means:
+//!   - the number of columns in a table is less than 256,
+//!   - the number of `EncodedInstruction`s is less than 256,
+//! * [`ClearQuery`]: the attribute `table_selection` is an `u8`, so
+//! the number of tables in a database is less than 256.
+//!
 //! # Structure of the project
 //! This project is divided in the following modules:
 //!
@@ -372,9 +382,9 @@ use sqlparser::ast::{Expr, SelectItem};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
-use tfhe::shortint::parameters::CiphertextConformanceParams;
 
-use tfhe::integer::{gen_keys_radix, wopbs::WopbsKey, ClientKey, RadixClientKey, ServerKey};
+use tfhe::integer::wopbs::WopbsKey;
+use tfhe::integer::{gen_keys_radix, ClientKey, RadixClientKey, ServerKey};
 use tfhe::shortint::{PBSParameters, ServerKey as ShortintSK, WopbsParameters};
 
 mod cipher_structs;

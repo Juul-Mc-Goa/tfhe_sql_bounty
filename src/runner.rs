@@ -75,12 +75,24 @@ impl<'a> EncryptedResult<'a> {
         add_booleans(&mut self.is_entry_in_result, &other.is_entry_in_result);
         add_booleans(&mut self.projection, &other.projection);
 
-        for (self_entry, other_entry) in self.content.iter_mut().zip(other.content.iter()) {
-            for (self_cell, other_cell) in self_entry.iter_mut().zip(other_entry.iter()) {
-                self.server_key
-                    .add_assign_parallelized(self_cell, other_cell)
-            }
-        }
+        self.content
+            .par_iter_mut()
+            .zip(other.content.par_iter())
+            .for_each(|(self_entry, other_entry)| {
+                self_entry
+                    .par_iter_mut()
+                    .zip(other_entry.par_iter())
+                    .for_each(|(self_cell, other_cell)| {
+                        self.server_key
+                            .add_assign_parallelized(self_cell, other_cell)
+                    })
+            });
+        // for (self_entry, other_entry) in self.content.iter_mut().zip(other.content.iter()) {
+        //     for (self_cell, other_cell) in self_entry.iter_mut().zip(other_entry.iter()) {
+        //         self.server_key
+        //             .add_assign_parallelized(self_cell, other_cell)
+        //     }
+        // }
     }
 }
 

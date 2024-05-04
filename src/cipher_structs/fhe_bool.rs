@@ -1,7 +1,7 @@
 use tfhe::shortint::ciphertext::NoiseLevel;
 use tfhe::shortint::{Ciphertext, ServerKey as ShortintSK};
 
-use tfhe::integer::{BooleanBlock, RadixCiphertext, RadixClientKey};
+use tfhe::integer::{BooleanBlock, RadixCiphertext, RadixClientKey, ServerKey};
 
 use std::ops::{Add, AddAssign, Mul, Not};
 
@@ -47,7 +47,7 @@ impl<'a> FheBool<'a> {
             .unchecked_scalar_bitand_assign(&mut self.ct, 1_u8)
     }
 
-    pub fn into_radix(mut self, num_blocks: usize, sks: ShortintSK) -> RadixCiphertext {
+    pub fn into_radix(mut self, num_blocks: usize, sks: &ServerKey) -> RadixCiphertext {
         self.make_boolean();
         BooleanBlock::new_unchecked(self.ct).into_radix(num_blocks, sks)
     }
