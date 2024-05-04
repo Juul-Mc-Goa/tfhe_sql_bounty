@@ -1,7 +1,7 @@
 > [!WARNING]
 > The functions signatures of this project differ from those described
 > [here](https://github.com/zama-ai/bounty-and-grant-program/issues/94).
-> This is for basically two reasons:
+> This is for basically three reasons:
 > 1. the DB headers allow to simplify encrypting the query (see [this
 >    comment](https://github.com/zama-ai/bounty-and-grant-program/issues/94#issuecomment-1964333986)),
 > 2. the clear query allows to [simplify decrypting the
