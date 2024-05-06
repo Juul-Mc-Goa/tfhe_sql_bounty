@@ -87,12 +87,6 @@ impl<'a> EncryptedResult<'a> {
                             .add_assign_parallelized(self_cell, other_cell)
                     })
             });
-        // for (self_entry, other_entry) in self.content.iter_mut().zip(other.content.iter()) {
-        //     for (self_cell, other_cell) in self_entry.iter_mut().zip(other_entry.iter()) {
-        //         self.server_key
-        //             .add_assign_parallelized(self_cell, other_cell)
-        //     }
-        // }
     }
 }
 

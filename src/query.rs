@@ -360,8 +360,8 @@ impl U64SyntaxTree {
             result.push((true, a_index, which_op, (b_index as u64), negate));
         };
         match self {
-            // HACK: False <=> query_lut.get(current_index) != 0
-            Self::False => result.push((false, base_index, false, 0u64, true)),
+            // HACK: False <=> query_lut.get(current_index) AND query_lut.get(current_index) == true
+            Self::False => result.push((true, base_index, false, base_index as u64, false)),
             Self::True => (), // True <=> no instruction
             Self::Atom(a) => result.push(a.encode()),
             Self::And(a, b) => add_node(a, b, false, false),

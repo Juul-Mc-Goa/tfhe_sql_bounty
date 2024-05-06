@@ -6,7 +6,7 @@
 >    comment](https://github.com/zama-ai/bounty-and-grant-program/issues/94#issuecomment-1964333986)),
 > 2. the clear query allows to [simplify decrypting the
 >    result](https://github.com/zama-ai/bounty-and-grant-program/issues/94#issuecomment-2085539241)
-> 3. some internal parameters for WopbsKey and ServerKey are private (or can
+> 3. some internal parameters for `WopbsKey` and `ServerKey` are private (or can
 >    only be accessed by consuming the variables), so they are accessed once,
 >    then forwarded to other parts of the code that need them.
 
