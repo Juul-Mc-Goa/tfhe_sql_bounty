@@ -612,13 +612,11 @@ version = "0.1.0"
 dependencies = [
  "aligned-vec",
  "clap",
- "concrete-csprng",
  "concrete-fft",
  "csv",
  "dyn-stack",
  "egg",
  "rayon",
- "serde",
  "sqlparser",
  "tfhe",
 ]
