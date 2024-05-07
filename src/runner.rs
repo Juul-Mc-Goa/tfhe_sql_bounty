@@ -274,7 +274,7 @@ impl<'a> TableQueryRunner<'a> {
             .map(|b| b.ct)
             .collect::<Vec<_>>();
 
-        println!("running the query on all tables...");
+        println!("running the query on table...");
         let timer = std::time::Instant::now();
         let tmp_result: Vec<FheBool> = self
             .content
@@ -335,7 +335,7 @@ pub struct DbQueryRunner<'a> {
 
 impl<'a> DbQueryRunner<'a> {
     pub fn new(
-        db: Database,
+        db: &'a Database,
         server_key: &'a ServerKey,
         shortint_server_key: &'a ShortintSK,
         wopbs_key: &'a WopbsKey,

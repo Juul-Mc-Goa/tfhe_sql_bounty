@@ -388,6 +388,7 @@ use tfhe::integer::{gen_keys_radix, ClientKey, RadixClientKey, ServerKey};
 use tfhe::shortint::{PBSParameters, ServerKey as ShortintSK, WopbsParameters};
 
 mod cipher_structs;
+mod clear;
 mod distinct;
 mod encoding;
 mod query;
@@ -510,7 +511,7 @@ fn decrypt_result_to_hashmap(
                     decoded_result = vec![string_result];
                     break;
                 }
-                _ => todo!(),
+                s => panic!("Unsupported SelectItem: {s:?}"),
             }
         }
 
@@ -525,21 +526,26 @@ fn decrypt_result_to_hashmap(
     hashmap
 }
 
-/// The output of this function is a string using the CSV format
-/// You should provide a way to compare this string with the output of
-/// the clear DB system you use for comparison
+fn result_hashmap_to_string(h: HashMap<String, u32>) -> String {
+    let mut result_vec: Vec<String> = Vec::new();
+    for (k, v) in h.iter() {
+        // repeat the key as many times as it should appear in the result String
+        result_vec.append(&mut vec![k.clone(); *v as usize]);
+    }
+    result_vec.join("\n")
+}
+
+/// The output of this function is a string using the CSV format.
+#[allow(dead_code)]
 fn decrypt_result(
     client_key: &RadixClientKey,
     result: &EncryptedResult,
     headers: DatabaseHeaders,
     query: ClearQuery,
 ) -> String {
-    let mut result_vec: Vec<String> = Vec::new();
-    for (k, v) in decrypt_result_to_hashmap(client_key, result, headers, query).iter() {
-        // repeat the key as many times as it should appear in the result String
-        result_vec.append(&mut vec![k.clone(); *v as usize]);
-    }
-    result_vec.join("\n")
+    result_hashmap_to_string(decrypt_result_to_hashmap(
+        client_key, result, headers, query,
+    ))
 }
 
 #[allow(dead_code)]
@@ -599,7 +605,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n{}\n", query.pretty());
 
     let query_runner = DbQueryRunner::new(
-        db,
+        &db,
         &server_key,
         &shortint_server_key,
         &wopbs_key,
@@ -612,7 +618,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ct_result = query_runner.run_query(&encrypted_query);
     println!("decrypting...");
-    let clear_result = decrypt_result(&client_key, &ct_result, headers, query);
+    let fhe_computation_result =
+        decrypt_result_to_hashmap(&client_key, &ct_result, headers, query.clone());
 
     let total_time = timer.elapsed();
 
@@ -621,9 +628,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         total_time.as_secs(),
         total_time.subsec_millis() / 10
     );
-    println!("Clear DB Result: TODO\n");
-    println!("Encrypted DB Result:\n{clear_result}\n");
-    println!("Results match: TODO");
+    let clear_computation_hashmap = db.run_clear_query(query);
+    println!(
+        "Clear DB Result: \n{}\n",
+        result_hashmap_to_string(clear_computation_hashmap.clone())
+    );
+    println!(
+        "Encrypted DB Result:\n{}\n",
+        result_hashmap_to_string(fhe_computation_result.clone())
+    );
+
+    println!(
+        "Results match: {}",
+        fhe_computation_result == clear_computation_hashmap
+    );
 
     Ok(())
 }

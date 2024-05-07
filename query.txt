@@ -1,1 +1,1 @@
-SELECT DISTINCT some_int FROM table_1 WHERE some_int < 0
+SELECT some_int FROM table_1
