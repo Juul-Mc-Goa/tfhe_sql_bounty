@@ -1,1 +1,1 @@
-SELECT some_int FROM table_1
+SELECT DISTINCT * FROM table_1 WHERE NOT some_str = "first line"

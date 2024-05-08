@@ -98,37 +98,13 @@ impl<'a> QueryLUT<'a> {
     }
 
     /// Updates a lookup table at the given index.
+    ///
+    /// This method only calls [`update_glwe_with_fhe_bool`].
     pub fn update(&mut self, index: u8, value: &FheBool) {
-        let value = &value.ct;
         let index = index as usize;
-
-        // keyswitch to wopbs
-        let wopbs_value = self
-            .wopbs_key
-            .keyswitch_to_wopbs_params(self.server_key, value);
-
         let mut lut_at_index = self.lut.get_mut(index);
-        let (mut mask, mut body) = lut_at_index.get_mut_mask_and_body();
 
-        // manual embedding LWE -> GLWE
-        mask.as_mut()
-            .copy_from_slice(wopbs_value.ct.get_mask().as_ref());
-
-        // perform the (opposite) steps that are performed in
-        // extract_lwe_sample_from_glwe_ciphertext in reverse order. In this
-        // function, the steps are:
-        // 1. reverse the mask
-        // 2. mutate the mask: mask[0..opposite_count] <- - mask[0..opposite_count]
-        // 3. rotate the result: mask.rotate_left(opposite_count)
-        use tfhe::core_crypto::algorithms::slice_algorithms::slice_wrapping_opposite_assign;
-        let opposite_count = mask.as_ref().len() - 1; // we know we extract the coef of degree 0
-
-        mask.as_mut().rotate_right(opposite_count); // opposite of 3.
-        slice_wrapping_opposite_assign(&mut mask.as_mut()[0..opposite_count]); // opposite of 2.
-        mask.as_mut().reverse(); // opposite of 1.
-
-        // copy the input body into the 0th coefficient of the output body
-        body.as_mut()[0] = *wopbs_value.ct.get_body().data;
+        update_glwe_with_fhe_bool(&mut lut_at_index, &value, &self.wopbs_key);
     }
 
     /// Inner function called when performing table lookup. Copy-pasted from
@@ -292,4 +268,45 @@ impl<'a> QueryLUT<'a> {
     pub fn keyswitch_to_pbs_params(&self, ct_in: &Ciphertext) -> Ciphertext {
         keyswitch_to_pbs_params(self.wopbs_key, ct_in)
     }
+}
+
+/// Mutates `output_glwe` so as to match the ciphertext hold by `value`
+/// keyswitched to `wopbs_key`.
+///
+/// Having this function outside of the `QueryLUT` implementation allows for
+/// parallel updating of its (hidden) values.
+pub fn update_glwe_with_fhe_bool<C>(
+    output_glwe: &mut GlweCiphertext<C>,
+    value: &FheBool,
+    wopbs_key: &WopbsKey,
+) where
+    C: ContainerMut<Element = u64>,
+{
+    let server_key = &value.server_key;
+    let value = &value.ct;
+
+    // keyswitch to wopbs
+    let wopbs_value = wopbs_key.keyswitch_to_wopbs_params(server_key, value);
+
+    let (mut mask, mut body) = output_glwe.get_mut_mask_and_body();
+
+    // manual embedding LWE -> GLWE
+    mask.as_mut()
+        .copy_from_slice(wopbs_value.ct.get_mask().as_ref());
+
+    // perform the (opposite) steps that are performed in
+    // extract_lwe_sample_from_glwe_ciphertext in reverse order. In this
+    // function, the steps are:
+    // 1. reverse the mask
+    // 2. mutate the mask: mask[0..opposite_count] <- - mask[0..opposite_count]
+    // 3. rotate the result: mask.rotate_left(opposite_count)
+    use tfhe::core_crypto::algorithms::slice_algorithms::slice_wrapping_opposite_assign;
+    let opposite_count = mask.as_ref().len() - 1; // we know we extract the coef of degree 0
+
+    mask.as_mut().rotate_right(opposite_count); // opposite of 3.
+    slice_wrapping_opposite_assign(&mut mask.as_mut()[0..opposite_count]); // opposite of 2.
+    mask.as_mut().reverse(); // opposite of 1.
+
+    // copy the input body into the 0th coefficient of the output body
+    body.as_mut()[0] = *wopbs_value.ct.get_body().data;
 }

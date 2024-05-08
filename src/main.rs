@@ -602,7 +602,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = load_tables(db_dir_path).expect("Failed to load DB at {db_dir_path}");
     let headers = db.headers();
     let query = parse_query_from_file(query_path, &headers);
-    println!("\n{}\n", query.pretty());
 
     let query_runner = DbQueryRunner::new(
         &db,

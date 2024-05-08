@@ -1,9 +1,10 @@
 use rayon::prelude::*;
+use tfhe::core_crypto::commons::traits::ContiguousEntityContainerMut;
 use tfhe::integer::wopbs::WopbsKey;
 use tfhe::integer::{RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, ServerKey as ShortintSK, WopbsParameters};
 
-use crate::cipher_structs::{EntryLUT, FheBool, QueryLUT};
+use crate::cipher_structs::{query_lut::update_glwe_with_fhe_bool, EntryLUT, FheBool, QueryLUT};
 use crate::{Database, Table, TableHeaders};
 use crate::{EncryptedQuery, EncryptedSyntaxTree};
 
@@ -200,6 +201,9 @@ impl<'a> TableQueryRunner<'a> {
         let sk = self.server_key;
         let shortint_sk = self.shortint_server_key;
         let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
+        // if an encrypted where condition has n leaves, then it
+        // has n-1 nodes: so a total of 2n-1 elements
+        let atom_count = (query.len() + 1) / 2;
 
         let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key, &inner_wopbs);
         let mut query_lut: QueryLUT<'_> = QueryLUT::new(
@@ -223,41 +227,56 @@ impl<'a> TableQueryRunner<'a> {
             new_fhe_bool(sk.eq_parallelized(a, b).into_inner())
         };
 
+        // if the query is empty then return true
         if query.is_empty() {
-            // if the query is empty then return true
             return FheBool::encrypt_trivial(true, shortint_sk);
         }
 
-        // else, loop through all atoms
-        for (index, (is_node, left, which_op, right, negate)) in query.iter().enumerate() {
-            println!("instruction {index}...");
-            let timer = std::time::Instant::now();
-            let (is_node, which_op, negate) = (
-                new_fhe_bool(is_node.clone()),
-                new_fhe_bool(which_op.clone()),
-                new_fhe_bool(negate.clone()),
-            );
+        // else, loop through all instructions
+        // first, split the instruction list into atoms (ie leaves) and nodes
+        let (atoms, nodes) = query.split_at(atom_count);
 
-            let val_left = entry_lut.apply(left);
-            let val_right = right;
-            // (val_left <= val_right) <=> is_lt XOR is_eq
-            let is_lt = is_lt(&val_left, val_right);
-            let is_eq = is_eq(&val_left, val_right);
-            let atom_bool = is_eq + &which_op * is_lt;
+        // atoms can be computed in parallel
+        atoms
+            .par_iter()
+            .zip(query_lut.lut.par_iter_mut())
+            .for_each(|(atom, mut lut_value)| {
+                let (_, left, which_op, right, negate) = atom;
+                let (which_op, negate) =
+                    (new_fhe_bool(which_op.clone()), new_fhe_bool(negate.clone()));
+                let val_left = entry_lut.apply(left);
+
+                let is_lt = is_lt(&val_left, right);
+                let is_eq = is_eq(&val_left, right);
+
+                let atom_bool = is_eq + &which_op * is_lt + negate;
+
+                update_glwe_with_fhe_bool(&mut lut_value, &atom_bool, &inner_wopbs);
+            });
+
+        // if there are no nodes, return the last atom
+        if nodes.is_empty() {
+            return query_lut.apply(
+                &self
+                    .server_key
+                    .create_trivial_radix::<u64, RadixCiphertext>((atom_count - 1) as u64, 4),
+                &self.shortint_server_key,
+            );
+        }
+
+        // else iter through all nodes
+        // (nodes have to be computed sequentially)
+        for (index, (_, left, which_op, right, negate)) in nodes.iter().enumerate() {
+            let index = index + atom_count;
+            let (which_op, negate) = (new_fhe_bool(which_op.clone()), new_fhe_bool(negate.clone()));
 
             let node_left = query_lut.apply(left, shortint_sk);
             let node_right = query_lut.apply(&sk.cast_to_unsigned(right.clone(), 4), shortint_sk);
-            let node_bool = (node_left + &which_op) * (node_right + &which_op) + which_op;
-
-            result_bool = &atom_bool + is_node * (node_bool + &atom_bool) + negate;
+            result_bool = (node_left + &which_op) * (node_right + &which_op) + which_op + negate;
 
             query_lut.update(index as u8, &result_bool);
-            let entry_duration = timer.elapsed();
-            println!(
-                "intruction {index} done. runtime {}",
-                entry_duration.as_secs_f32()
-            );
         }
+
         result_bool
     }
 
@@ -274,31 +293,18 @@ impl<'a> TableQueryRunner<'a> {
             .map(|b| b.ct)
             .collect::<Vec<_>>();
 
-        println!("running the query on table...");
-        let timer = std::time::Instant::now();
         let tmp_result: Vec<FheBool> = self
             .content
             .par_iter()
             .map(|entry| self.run_query_on_entry(entry, &query.where_condition))
             .collect();
-        let query_duration = timer.elapsed();
-        println!("query done. (runtime: {})", query_duration.as_secs_f32());
 
-        println!("complying with DISTINCT...");
-        let timer = std::time::Instant::now();
         let bool_result = self
             .comply_with_distinct_bool(&query.distinct, &query.projection, tmp_result.as_slice())
             .into_iter()
             .map(|b| b.ct)
             .collect::<Vec<_>>();
-        let distinct_duration = timer.elapsed();
-        println!(
-            "...DISTINCT done.(runtime: {})",
-            distinct_duration.as_secs_f32()
-        );
 
-        println!("creating trivial encryptions...");
-        let timer = std::time::Instant::now();
         let content = self
             .content
             .iter()
@@ -309,11 +315,6 @@ impl<'a> TableQueryRunner<'a> {
                     .collect()
             })
             .collect();
-        let encryption_duration = timer.elapsed();
-        println!(
-            "...encryption done. (runtime: {})",
-            encryption_duration.as_secs_f32()
-        );
 
         EncryptedResult {
             is_entry_in_result: bool_result,
@@ -410,24 +411,10 @@ impl<'a> DbQueryRunner<'a> {
                     let mut result = table.run_query(query);
 
                     // multiply by 0 or 1
-                    println!("multiplying everything by 0 or 1...");
-                    let timer = std::time::Instant::now();
                     result.block_mul_assign(&is_correct_table);
-                    let mul_assign_duration = timer.elapsed();
-                    println!(
-                        "...multiplication done. (runtime: {})",
-                        mul_assign_duration.as_secs_f32()
-                    );
 
                     // resize result so that every result have the same dimensions
-                    println!("resizing...");
-                    let timer = std::time::Instant::now();
                     result.resize(self.output_length(), self.output_width());
-                    let resize_duration = timer.elapsed();
-                    println!(
-                        "...resize done. (runtime {})",
-                        resize_duration.as_secs_f32()
-                    );
 
                     result
                 })
@@ -435,16 +422,10 @@ impl<'a> DbQueryRunner<'a> {
 
             // then sum each table
             let mut acc: EncryptedResult = result_vec.swap_remove(0);
-            println!("combining table results...");
-            let timer = std::time::Instant::now();
             for table in result_vec {
                 acc.add_assign(&table)
             }
-            let add_duration = timer.elapsed();
-            println!(
-                "...combining done. (runtime: {})",
-                add_duration.as_secs_f32()
-            );
+
             acc
         }
     }

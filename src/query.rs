@@ -198,32 +198,40 @@ impl U64Atom {
 impl U64SyntaxTree {
     /// Stringifies a `U64SyntaxTree` for debugging purposes.
     #[allow(dead_code)]
-    fn to_string_lines(&self, base_index: u8) -> Vec<String> {
-        let indent_closure =
-            |v: Vec<String>| v.iter().map(|s| format!("  {s}")).collect::<Vec<String>>();
-        let binary_op_closure = |op: &str, a: &U64SyntaxTree, b: &U64SyntaxTree| {
-            let b_base_index = a.index(base_index) + 1;
-            let mut result = vec![format!("({}) {op}", self.index(base_index))];
-            let mut left: Vec<String> = indent_closure(a.to_string_lines(base_index));
-            let mut right: Vec<String> = indent_closure(b.to_string_lines(b_base_index));
-            result.append(&mut left);
-            result.append(&mut right);
-            result
+    fn to_string_vec_pair(
+        &self,
+        atoms: &mut Vec<String>,
+        nodes: &mut Vec<String>,
+        total_atoms_nb: u8,
+    ) {
+        let mut add_node = |a: &Self, b: &Self, op: String| {
+            a.to_string_vec_pair(atoms, nodes, total_atoms_nb);
+            let id_a = match a {
+                Self::True | Self::False | Self::Atom(_) => atoms.len().saturating_sub(1) as u8,
+                _ => total_atoms_nb + (nodes.len().saturating_sub(1) as u8),
+            };
+
+            b.to_string_vec_pair(atoms, nodes, total_atoms_nb);
+            let id_b = match b {
+                Self::True | Self::False | Self::Atom(_) => atoms.len().saturating_sub(1) as u8,
+                _ => total_atoms_nb + (nodes.len().saturating_sub(1) as u8),
+            };
+            nodes.push(format!("({id_a}) {op} ({id_b})"));
         };
-        match &self {
+        match self {
             U64SyntaxTree::True => {
-                vec![format!("({}) True", self.index(base_index))]
+                atoms.push("True".into());
             }
             U64SyntaxTree::False => {
-                vec![format!("({}) False", self.index(base_index))]
+                atoms.push("False".into());
             }
             U64SyntaxTree::Atom(a) => {
-                vec![format!("({}) {}", self.index(base_index), a.to_string())]
+                atoms.push(a.to_string());
             }
-            U64SyntaxTree::And(a, b) => binary_op_closure("And", a, b),
-            U64SyntaxTree::Or(a, b) => binary_op_closure("Or", a, b),
-            U64SyntaxTree::Nand(a, b) => binary_op_closure("Not And", a, b),
-            U64SyntaxTree::Nor(a, b) => binary_op_closure("Not Or", a, b),
+            U64SyntaxTree::And(a, b) => add_node(a, b, "AND".into()),
+            U64SyntaxTree::Or(a, b) => add_node(a, b, "OR".into()),
+            U64SyntaxTree::Nand(a, b) => add_node(a, b, "NAND".into()),
+            U64SyntaxTree::Nor(a, b) => add_node(a, b, "NOR".into()),
         }
     }
 
@@ -231,7 +239,19 @@ impl U64SyntaxTree {
     #[allow(dead_code)]
     #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
-        self.to_string_lines(0).join("\n")
+        let mut atoms: Vec<String> = Vec::new();
+        let mut nodes: Vec<String> = Vec::new();
+        let total_atoms_nb = self.atom_count();
+
+        self.to_string_vec_pair(&mut atoms, &mut nodes, total_atoms_nb);
+
+        atoms.append(&mut nodes);
+        atoms
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| format!("({i}) {s}"))
+            .collect::<Vec<String>>()
+            .join("\n")
     }
 
     pub fn negate(self) -> Self {
@@ -339,6 +359,7 @@ impl U64SyntaxTree {
     ///
     /// A node is encoded after its children, so that `self.index(base_index) =
     /// base_index + (size of the subtree rooted at self)`
+    #[allow(dead_code)]
     fn index(&self, base_index: u8) -> u8 {
         match self {
             Self::Atom(_) | Self::True | Self::False => base_index,
@@ -348,7 +369,67 @@ impl U64SyntaxTree {
         }
     }
 
+    fn atom_count(&self) -> u8 {
+        match self {
+            Self::Atom(_) | Self::True | Self::False => 1,
+            Self::And(a, b) | Self::Nand(a, b) | Self::Or(a, b) | Self::Nor(a, b) => {
+                b.atom_count() + a.atom_count()
+            }
+        }
+    }
+
+    /// Encodes itself: mutates `atom_result` or `node_result` accordingly.
+    ///
+    /// Atom encodings are in a different vector than node encodings, so that the
+    /// final result is the concatenation of `atom_result` and `node_result`. So
+    /// we have that (because a `U64SyntaxTree` is a binary tree) the first half
+    /// of the total result encodes atoms, the rest encodes nodes. This simplify
+    /// the FHE computations on the server side.
+    fn encode_split(
+        &self,
+        total_atoms_nb: u8,
+        atom_result: &mut Vec<EncodedInstruction>,
+        node_result: &mut Vec<EncodedInstruction>,
+    ) {
+        let mut add_node = |a: &Self, b: &Self, which_op: bool, negate: bool| {
+            a.encode_split(total_atoms_nb, atom_result, node_result);
+            let id_a = match a {
+                Self::True | Self::False | Self::Atom(_) => {
+                    atom_result.len().saturating_sub(1) as u8
+                }
+                _ => total_atoms_nb + (node_result.len().saturating_sub(1) as u8),
+            };
+
+            b.encode_split(total_atoms_nb, atom_result, node_result);
+            let id_b = match b {
+                Self::True | Self::False | Self::Atom(_) => {
+                    atom_result.len().saturating_sub(1) as u8
+                }
+                _ => total_atoms_nb + (node_result.len().saturating_sub(1) as u8),
+            };
+            node_result.push((true, id_a, which_op, (id_b as u64), negate))
+        };
+
+        match self {
+            // HACK: False <=> !(column_0 <= u64::MAX)
+            Self::False => atom_result.push((
+                false,    // encode an atom
+                0_u8,     // column index is 0
+                true,     // operator is <=
+                u64::MAX, // value
+                true,     // negate
+            )),
+            Self::True => (), // True <=> no instruction
+            Self::Atom(a) => atom_result.push(a.encode()),
+            Self::And(a, b) => add_node(a, b, false, false),
+            Self::Nand(a, b) => add_node(a, b, false, true),
+            Self::Or(a, b) => add_node(a, b, true, false),
+            Self::Nor(a, b) => add_node(a, b, true, true),
+        }
+    }
+
     /// Encodes itself into a `Vec<EncodedInstruction64>`.
+    #[allow(dead_code)]
     pub fn encode_with_index(&self, base_index: u8) -> Vec<EncodedInstruction> {
         let mut result: Vec<EncodedInstruction> = Vec::new();
 
@@ -374,7 +455,15 @@ impl U64SyntaxTree {
 
     /// Encodes itself into a `Vec<EncodedInstruction64>`.
     pub fn encode(&self) -> Vec<EncodedInstruction> {
-        self.encode_with_index(0_u8)
+        // self.encode_with_index(0_u8)
+        let atom_count = self.atom_count();
+        let (mut atom_result, mut node_result) = (
+            Vec::<EncodedInstruction>::with_capacity(atom_count as usize),
+            Vec::<EncodedInstruction>::with_capacity(atom_count as usize),
+        );
+        self.encode_split(atom_count, &mut atom_result, &mut node_result);
+        atom_result.append(&mut node_result);
+        atom_result
     }
 
     /// Encrypts a `U64SyntaxTree`.
@@ -512,6 +601,7 @@ impl ClearQuery {
     }
 
     /// Pretty-printing
+    #[allow(dead_code)]
     pub fn pretty(&self) -> String {
         [
             "ClearQuery:".to_string(),
