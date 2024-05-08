@@ -62,8 +62,8 @@ pub enum CellContent {
     ShortString(String),
 }
 
-pub fn clear_entry_to_string(entry: Vec<CellContent>) -> String {
-    entry
+pub fn clear_record_to_string(record: Vec<CellContent>) -> String {
+    record
         .iter()
         .map(|c| c.to_string())
         .collect::<Vec<_>>()
@@ -258,14 +258,14 @@ pub fn load_tables(path: PathBuf) -> Result<Database, Box<dyn std::error::Error>
         let mut rdr = csv::Reader::from_path(table_path)?;
         let mut content: Vec<Vec<CellContent>> = Vec::new();
 
-        for entry in rdr.records() {
-            let mut entry_content: Vec<CellContent> = Vec::with_capacity(headers.0.len());
-            let inner_entry = entry.unwrap();
-            let cell_iter = inner_entry.iter().zip(headers.0.clone());
+        for record in rdr.records() {
+            let mut record_content: Vec<CellContent> = Vec::with_capacity(headers.0.len());
+            let inner_record = record.unwrap();
+            let cell_iter = inner_record.iter().zip(headers.0.clone());
             for (content, (_label, cell_type)) in cell_iter {
-                entry_content.push(CellContent::from((content, &cell_type)));
+                record_content.push(CellContent::from((content, &cell_type)));
             }
-            content.push(entry_content);
+            content.push(record_content);
         }
         result.push((table_name, Table { headers, content }))
     }

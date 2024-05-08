@@ -103,9 +103,9 @@ pub fn decode_cell(cell_type: CellType, encoded_cell: Vec<u64>) -> CellContent {
 }
 
 #[allow(dead_code)]
-pub fn decode_entry(
+pub fn decode_record(
     headers: &TableHeaders,
-    entry: Vec<u64>,
+    record: Vec<u64>,
     projection: &[bool],
 ) -> Vec<CellContent> {
     let mut result: Vec<CellContent> = Vec::with_capacity(headers.0.len());
@@ -117,7 +117,7 @@ pub fn decode_entry(
         let cell_len = headers.type_of(column_name.to_string()).unwrap().len();
         let new_cellcontent = decode_cell(
             cell_type.clone(),
-            entry[cell_index..(cell_index + cell_len)].to_vec(),
+            record[cell_index..(cell_index + cell_len)].to_vec(),
         );
         result.push(new_cellcontent);
     }

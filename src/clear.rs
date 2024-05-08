@@ -11,13 +11,13 @@ use crate::tables::Database;
 use crate::{ComparisonOp, U64Atom, U64SyntaxTree};
 
 impl Database {
-    fn evaluate_condition_on_raw_entry(&self, condition: &U64SyntaxTree, entry: &[u64]) -> bool {
-        let eval = |cond| self.evaluate_condition_on_raw_entry(cond, entry);
+    fn evaluate_condition_on_raw_record(&self, condition: &U64SyntaxTree, record: &[u64]) -> bool {
+        let eval = |cond| self.evaluate_condition_on_raw_record(cond, record);
         match condition {
             U64SyntaxTree::False => false,
             U64SyntaxTree::True => true,
             U64SyntaxTree::Atom(U64Atom { index, op, value }) => {
-                let (left, right) = (entry[*index as usize], *value);
+                let (left, right) = (record[*index as usize], *value);
                 match op {
                     ComparisonOp::LessThan => left < right,
                     ComparisonOp::LessEqual => left <= right,
@@ -47,12 +47,12 @@ impl Database {
 
         let mut result: HashMap<String, u32> = HashMap::new();
 
-        for entry in &table.content {
-            let encoded_entry = entry
+        for record in &table.content {
+            let encoded_record = record
                 .iter()
                 .flat_map(|cell| cell.encode())
                 .collect::<Vec<u64>>();
-            if self.evaluate_condition_on_raw_entry(&where_condition, &encoded_entry) {
+            if self.evaluate_condition_on_raw_record(&where_condition, &encoded_record) {
                 let mut key: Vec<String> = Vec::new();
 
                 for s in &sql_projection {
@@ -64,10 +64,10 @@ impl Database {
                                 .index_of(ident.clone())
                                 .expect("Column identifier {ident} does not exist")
                                 as usize;
-                            key.push(entry[index].to_string())
+                            key.push(record[index].to_string())
                         }
                         SelectItem::Wildcard(_) => {
-                            key = vec![entry
+                            key = vec![record
                                        .iter()
                                        .map(|cell| cell.to_string())
                                        .collect::<Vec<String>>()

@@ -4,14 +4,14 @@ use tfhe::integer::wopbs::WopbsKey;
 use tfhe::integer::{RadixCiphertext, ServerKey};
 use tfhe::shortint::{Ciphertext, ServerKey as ShortintSK, WopbsParameters};
 
-use crate::cipher_structs::{query_lut::update_glwe_with_fhe_bool, EntryLUT, FheBool, QueryLUT};
+use crate::cipher_structs::{query_lut::update_glwe_with_fhe_bool, FheBool, QueryLUT, RecordLUT};
 use crate::{Database, Table, TableHeaders};
 use crate::{EncryptedQuery, EncryptedSyntaxTree};
 
 /// A result of a SQL query.
 pub struct EncryptedResult<'a> {
-    /// Contains one encrypted boolean for each entry.
-    pub is_entry_in_result: Vec<Ciphertext>,
+    /// Contains one encrypted boolean for each record.
+    pub is_record_in_result: Vec<Ciphertext>,
     /// Contains one encrypted boolean for each column.
     pub projection: Vec<Ciphertext>,
     /// Contains one encrypted `u64` for each cell.
@@ -29,31 +29,33 @@ impl<'a> EncryptedResult<'a> {
         let value = self.shortint_server_key.create_trivial(0);
         let value_radix: RadixCiphertext = self.server_key.create_trivial_zero_radix(32);
 
-        self.is_entry_in_result.resize(length, value.clone());
+        self.is_record_in_result.resize(length, value.clone());
         self.projection.resize(width, value.clone());
 
         self.content
             .iter_mut()
-            .for_each(|entry| entry.resize(width, value_radix.clone()));
+            .for_each(|record| record.resize(width, value_radix.clone()));
         self.content.resize(length, vec![value_radix; width]);
     }
 
     /// Multiply each stored `Ciphertext` or `RadixCiphertext` by a given `Ciphertext`.
     pub fn block_mul_assign(&mut self, ct: &Ciphertext) {
-        self.is_entry_in_result
+        self.is_record_in_result
             .par_iter_mut()
-            .for_each(|entry_bool: &mut Ciphertext| {
-                self.shortint_server_key.mul_assign(entry_bool, ct)
+            .for_each(|record_bool: &mut Ciphertext| {
+                self.shortint_server_key.mul_assign(record_bool, ct)
             });
         self.projection
             .par_iter_mut()
             .for_each(|column_bool: &mut Ciphertext| {
                 self.shortint_server_key.mul_assign(column_bool, ct)
             });
-        self.content.par_iter_mut().for_each(|entry| {
-            entry.par_iter_mut().for_each(|cell: &mut RadixCiphertext| {
-                self.server_key.block_mul_assign_parallelized(cell, ct, 0)
-            })
+        self.content.par_iter_mut().for_each(|record| {
+            record
+                .par_iter_mut()
+                .for_each(|cell: &mut RadixCiphertext| {
+                    self.server_key.block_mul_assign_parallelized(cell, ct, 0)
+                })
         });
     }
 
@@ -62,8 +64,8 @@ impl<'a> EncryptedResult<'a> {
     /// Used to `XOR` two results.
     pub fn add_assign(&mut self, other: &EncryptedResult) {
         assert_eq!(
-            self.is_entry_in_result.len(),
-            other.is_entry_in_result.len()
+            self.is_record_in_result.len(),
+            other.is_record_in_result.len()
         );
         assert_eq!(self.projection.len(), other.projection.len());
 
@@ -73,16 +75,16 @@ impl<'a> EncryptedResult<'a> {
             }
         };
 
-        add_booleans(&mut self.is_entry_in_result, &other.is_entry_in_result);
+        add_booleans(&mut self.is_record_in_result, &other.is_record_in_result);
         add_booleans(&mut self.projection, &other.projection);
 
         self.content
             .par_iter_mut()
             .zip(other.content.par_iter())
-            .for_each(|(self_entry, other_entry)| {
-                self_entry
+            .for_each(|(self_record, other_record)| {
+                self_record
                     .par_iter_mut()
-                    .zip(other_entry.par_iter())
+                    .zip(other_record.par_iter())
                     .for_each(|(self_cell, other_cell)| {
                         self.server_key
                             .add_assign_parallelized(self_cell, other_cell)
@@ -94,7 +96,7 @@ impl<'a> EncryptedResult<'a> {
 /// An encoded representation of a SQL table, plus a bunch of server keys used
 /// during computations.
 ///
-/// Each entry is stored as a `Vec<u64>`. A table is a vector of entries.
+/// Each record is stored as a `Vec<u64>`. A table is a vector of entries.
 pub struct TableQueryRunner<'a> {
     pub headers: TableHeaders,
     pub content: Vec<Vec<u64>>,
@@ -117,7 +119,7 @@ impl<'a> TableQueryRunner<'a> {
             content: table
                 .content
                 .iter()
-                .map(|entry| entry.iter().flat_map(|cell| cell.encode()).collect())
+                .map(|record| record.iter().flat_map(|cell| cell.encode()).collect())
                 .collect::<Vec<Vec<u64>>>(),
             server_key,
             shortint_server_key,
@@ -126,15 +128,15 @@ impl<'a> TableQueryRunner<'a> {
         }
     }
 
-    /// Runs an encrypted query on a given entry.
+    /// Runs an encrypted query on a given record.
     ///
     /// # Inputs
-    /// - `entry: &Vec<u64>` an encoded entry,
+    /// - `record: &Vec<u64>` an encoded record,
     /// - `query: &EncryptedSyntaxTree` an encrypted `SELECT` query,
     /// - `query_lut: &mut QueryLUT` an updatable, hidden lookup table.
     /// # Output
     /// A `Ciphertext` encrypting a boolean that answers the question: "Is this
-    /// entry selected by the query?"
+    /// record selected by the query?"
     ///
     /// The encrypted boolean is actually an integer modulo 2, so that:
     /// - `a AND b` becomes `a*b`,
@@ -192,9 +194,9 @@ impl<'a> TableQueryRunner<'a> {
     /// 4. Three for computing `result_bool`.
     ///
     /// So a total of 8 PBS for each `EncryptedInstruction`.
-    fn run_query_on_entry(
+    fn run_query_on_record(
         &'a self,
-        entry: &[u64],
+        record: &[u64],
         query: &'a EncryptedSyntaxTree,
         // query_lut: &mut QueryLUT,
     ) -> FheBool {
@@ -205,7 +207,7 @@ impl<'a> TableQueryRunner<'a> {
         // has n-1 nodes: so a total of 2n-1 elements
         let atom_count = (query.len() + 1) / 2;
 
-        let entry_lut = EntryLUT::new(entry, sk, self.wopbs_key, &inner_wopbs);
+        let record_lut = RecordLUT::new(record, sk, self.wopbs_key, &inner_wopbs);
         let mut query_lut: QueryLUT<'_> = QueryLUT::new(
             query.len(),
             shortint_sk,
@@ -244,7 +246,7 @@ impl<'a> TableQueryRunner<'a> {
                 let (_, left, which_op, right, negate) = atom;
                 let (which_op, negate) =
                     (new_fhe_bool(which_op.clone()), new_fhe_bool(negate.clone()));
-                let val_left = entry_lut.apply(left);
+                let val_left = record_lut.apply(left);
 
                 let is_lt = is_lt(&val_left, right);
                 let is_eq = is_eq(&val_left, right);
@@ -282,7 +284,7 @@ impl<'a> TableQueryRunner<'a> {
 
     /// Runs an encrypted SQL query on a clear table.
     ///
-    /// For each table entry, computes (in parallel) if it is present in the
+    /// For each table record, computes (in parallel) if it is present in the
     /// result, ignoring the optional `DISTINCT` flag. Then process the result
     /// to comply with that flag.
     pub fn run_query(&'a self, query: &'a EncryptedQuery) -> EncryptedResult {
@@ -296,7 +298,7 @@ impl<'a> TableQueryRunner<'a> {
         let tmp_result: Vec<FheBool> = self
             .content
             .par_iter()
-            .map(|entry| self.run_query_on_entry(entry, &query.where_condition))
+            .map(|record| self.run_query_on_record(record, &query.where_condition))
             .collect();
 
         let bool_result = self
@@ -308,8 +310,8 @@ impl<'a> TableQueryRunner<'a> {
         let content = self
             .content
             .iter()
-            .map(|entry| {
-                entry
+            .map(|record| {
+                record
                     .par_iter()
                     .map(|cell| self.server_key.create_trivial_radix(*cell, 32))
                     .collect()
@@ -317,7 +319,7 @@ impl<'a> TableQueryRunner<'a> {
             .collect();
 
         EncryptedResult {
-            is_entry_in_result: bool_result,
+            is_record_in_result: bool_result,
             projection,
             content,
             server_key: self.server_key,

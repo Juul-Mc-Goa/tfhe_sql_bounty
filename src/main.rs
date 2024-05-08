@@ -16,7 +16,7 @@
 //! 4. The output vector is then encrypted and sent to the server.
 //! 5. When receiving the response from the server, the client decrypts only the
 //! necessary entries and columns based on the two attributes
-//! `encrypted_result.is_entry_in_result` and `encrypted_result.projection`.
+//! `encrypted_result.is_record_in_result` and `encrypted_result.projection`.
 //! Then the initial (clear) query sent to the server is used to rearrange the
 //! columns as requested by the query. See [`decrypt_result_to_hashmap`].
 //!
@@ -27,11 +27,11 @@
 //! 1. runs the encrypted query on the table, ignoring the optional `DISTINCT` flag,
 //! 2. post-process the result to make it compliant with that flag.
 //!
-//! This two-step process allows for parallel computation of each table entry at
+//! This two-step process allows for parallel computation of each table record at
 //! step 1.  Step 2 is mainly a cmux tree of depth equals to the number of
 //! columns: the only other operations done during this step are computing sums
 //! of ciphertexts, which should not be too expensive (in terms of cpu load).
-//! See [`TableQueryRunner::is_entry_already_in_result`].
+//! See [`TableQueryRunner::is_record_already_in_result`].
 //!
 //! After each `TableQueryRunner` finished its computations, the result of which
 //! is roughly stored as a `Vec<Vec<RadixCipherText>>`, they are combined into
@@ -146,7 +146,7 @@
 //! Contains the definition of a few structures handling encrypted data.
 //! Here are the structures defined there:
 //!
-//! #### [`EntryLUT`](cipher_structs::EntryLUT)
+//! #### [`RecordLUT`](cipher_structs::RecordLUT)
 //! A lookup table for handling FHE computations of functions `u8 -> u64`.
 //!
 //! #### [`FheBool`]
@@ -285,10 +285,10 @@
 //! # Evaluating an encrypted syntax tree
 //! ## Hidden lookup tables
 //! When performing a SQL query homomorphically, we run the encrypted query on
-//! each entry.
+//! each record.
 //!
 //! Let `n` be the length of the encoded query. The
-//! [`TableQueryRunner::run_query_on_entry`](TableQueryRunner::run_query_on_entry)
+//! [`TableQueryRunner::run_query_on_record`](TableQueryRunner::run_query_on_record)
 //! method first creates a vector `query_lut: Vec<Ciphertext>`, of size `n`,
 //! then write the (encrypted) result of each instruction into it.
 //! <div class="warning">
@@ -373,7 +373,7 @@
 //! 2. one PBS is necessary to process the boolean `is_node`,
 //! 3. some more PBS are needed to handle the `is_node == false` case.
 //!
-//! See at [`run_query_on_entry`](TableQueryRunner::run_query_on_entry)
+//! See at [`run_query_on_record`](TableQueryRunner::run_query_on_record)
 //! for a full analysis.
 //! </div>
 
@@ -397,7 +397,7 @@ mod simplify_query;
 mod tables;
 
 use cipher_structs::FheBool;
-use encoding::{decode_cell, decode_entry};
+use encoding::{decode_cell, decode_record};
 use query::*;
 use runner::{EncryptedResult, TableQueryRunner};
 use tables::*;
@@ -459,21 +459,21 @@ fn decrypt_result_to_hashmap(
         .map(|column_bool| (client_key.decrypt_one_block(column_bool) % 2) != 0)
         .collect::<Vec<bool>>();
 
-    let entry_in_result = result
-        .is_entry_in_result
+    let record_in_result = result
+        .is_record_in_result
         .iter()
-        .map(|entry_bool| (client_key.decrypt_one_block(entry_bool) % 2) != 0)
+        .map(|record_bool| (client_key.decrypt_one_block(record_bool) % 2) != 0)
         .collect::<Vec<bool>>();
 
     let mut hashmap: HashMap<String, u32> = HashMap::new();
 
-    for (_, entry) in result
+    for (_, record) in result
         .content
         .iter()
         .enumerate()
-        .filter(|(i, _)| entry_in_result[*i])
+        .filter(|(i, _)| record_in_result[*i])
     {
-        let clear_entry = entry
+        let clear_record = record
             .iter()
             .enumerate()
             .map(|(i, cell)| {
@@ -498,14 +498,14 @@ fn decrypt_result_to_hashmap(
                     let cell_type = table_headers.type_of(ident).unwrap();
                     let cell_len = cell_type.len();
                     let string_result =
-                        decode_cell(cell_type, clear_entry[index..(index + cell_len)].to_vec())
-                            .to_string();
+                        decode_cell(cell_type, clear_record[index..(index + cell_len)].to_vec())
+                        .to_string();
                     decoded_result.push(string_result);
                 }
                 SelectItem::Wildcard(_) => {
-                    let string_result = clear_entry_to_string(decode_entry(
+                    let string_result = clear_record_to_string(decode_record(
                         &table_headers,
-                        clear_entry,
+                        clear_record,
                         vec![true; table_headers.len()].as_ref(),
                     ));
                     decoded_result = vec![string_result];
@@ -592,7 +592,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("KeyGen...");
     let (client_key, server_key, shortint_server_key, wopbs_key, wopbs_params) = generate_keys();
-    println!("...done.");
+    println!("...done.\n");
 
     // parse cli args
     let db_dir_path = cli.input_db;
@@ -616,14 +616,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timer = Instant::now();
 
     let ct_result = query_runner.run_query(&encrypted_query);
-    println!("decrypting...");
     let fhe_computation_result =
         decrypt_result_to_hashmap(&client_key, &ct_result, headers, query.clone());
 
     let total_time = timer.elapsed();
 
     println!(
-        "Runtime: {}.{}s",
+        "Runtime: {}.{}s\n",
         total_time.as_secs(),
         total_time.subsec_millis() / 10
     );

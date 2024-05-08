@@ -9,7 +9,7 @@ use rayon::prelude::*;
 /// A lookup table, taking (encrypted) `u8` as input, returning (encrypted) `u64`s.
 ///
 /// Internally, this just stores eight `u8 -> u8` lookup tables.
-pub struct EntryLUT<'a> {
+pub struct RecordLUT<'a> {
     lut: (
         IntegerWopbsLUT,
         IntegerWopbsLUT,
@@ -25,23 +25,24 @@ pub struct EntryLUT<'a> {
     inner_wopbs_key: &'a tfhe::shortint::wopbs::WopbsKey,
 }
 
-impl<'a> EntryLUT<'a> {
+impl<'a> RecordLUT<'a> {
     pub fn new(
-        entry: &'a [u64],
+        record: &'a [u64],
         server_key: &'a ServerKey,
         wopbs_key: &'a WopbsKey,
         inner_wopbs_key: &'a tfhe::shortint::wopbs::WopbsKey,
     ) -> Self {
-        let entry_length = entry.len();
+        let record_length = record.len();
         // the server_key.generate_lut_radix() method needs a ciphertext for
         // computing the lut size. We use num_blocks = 4, i.e. we assume the
         // total number of columns in a table is lower than 4^4 = 256.
-        let max_argument: RadixCiphertext = server_key.create_trivial_radix(entry_length as u64, 4);
-        // convenience closure for looking up an entry's cell content from an encrypted index
+        let max_argument: RadixCiphertext =
+            server_key.create_trivial_radix(record_length as u64, 4);
+        // convenience closure for looking up an record's cell content from an encrypted index
         let f = |u: u64| -> u64 {
             let v = u as usize;
-            if v < entry_length {
-                entry[v]
+            if v < record_length {
+                record[v]
             } else {
                 0
             }

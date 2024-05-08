@@ -9,8 +9,8 @@ impl<'a> TableQueryRunner<'a> {
         self.content
             .iter()
             .enumerate()
-            .filter(|(_, entry)| {
-                entry
+            .filter(|(_, record)| {
+                record
                     .iter()
                     .enumerate()
                     // (j < proj_len && projection[j] = true) => cell = content[index][j]
@@ -47,7 +47,7 @@ impl<'a> TableQueryRunner<'a> {
     }
 
     /// An internal, recursive method to do what
-    /// [`is_entry_already_in_result`](Self::is_entry_already_in_result) needs
+    /// [`is_record_already_in_result`](Self::is_record_already_in_result) needs
     /// to do.
     ///
     /// Simply transforms an encrypted `projection` into a `clear_projection` by
@@ -99,8 +99,8 @@ impl<'a> TableQueryRunner<'a> {
     /// * `projection`: a list of encrypted booleans encoding which columns are
     /// selected by that query,
     ///
-    /// returns a boolean answering the question “does an entry such that
-    /// `result[i] = true` have the same projection as the entry at index `index` ?”
+    /// returns a boolean answering the question “does an record such that
+    /// `result[i] = true` have the same projection as the record at index `index` ?”
     ///
     /// <div class="warning">
     ///
@@ -115,7 +115,7 @@ impl<'a> TableQueryRunner<'a> {
     /// docs for why `XOR` is replaced by `+`.
     ///
     /// </div>
-    pub fn is_entry_already_in_result(
+    pub fn is_record_already_in_result(
         &'a self,
         index: u8,
         projection: &[FheBool<'a>],
@@ -145,7 +145,7 @@ impl<'a> TableQueryRunner<'a> {
 
         for (i, result_bool) in result.iter().enumerate() {
             let is_in_result =
-                self.is_entry_already_in_result(i as u8, projection, &compliant_result);
+                self.is_record_already_in_result(i as u8, projection, &compliant_result);
 
             // make_false = distinct AND is_in_result
             let make_false = distinct * &is_in_result;
