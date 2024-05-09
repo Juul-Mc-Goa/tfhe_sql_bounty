@@ -1,14 +1,19 @@
+//! Defines structs for running the encrypted query homomorphically.
+//!
+//! The bulk of the work is done inside the
+//! [`TableQueryRunner::run_query_on_record`] method.
 use rayon::prelude::*;
 use tfhe::core_crypto::commons::traits::ContiguousEntityContainerMut;
 use tfhe::integer::wopbs::WopbsKey;
 use tfhe::integer::{RadixCiphertext, ServerKey};
+use tfhe::shortint::wopbs::WopbsKey as ShortintWopbsKey;
 use tfhe::shortint::{Ciphertext, ServerKey as ShortintSK, WopbsParameters};
 
 use crate::cipher_structs::{query_lut::update_glwe_with_fhe_bool, FheBool, QueryLUT, RecordLUT};
 use crate::{Database, Table, TableHeaders};
 use crate::{EncryptedQuery, EncryptedSyntaxTree};
 
-/// A result of a SQL query.
+/// Holds the result of a SQL query.
 pub struct EncryptedResult<'a> {
     /// Contains one encrypted boolean for each record.
     pub is_record_in_result: Vec<Ciphertext>,
@@ -30,7 +35,7 @@ impl<'a> EncryptedResult<'a> {
         let value_radix: RadixCiphertext = self.server_key.create_trivial_zero_radix(32);
 
         self.is_record_in_result.resize(length, value.clone());
-        self.projection.resize(width, value.clone());
+        self.projection.resize(width, value);
 
         self.content
             .iter_mut()
@@ -103,6 +108,7 @@ pub struct TableQueryRunner<'a> {
     pub server_key: &'a ServerKey,
     pub shortint_server_key: &'a ShortintSK,
     pub wopbs_key: &'a WopbsKey,
+    pub shortint_wopbs_key: &'a ShortintWopbsKey,
     pub wopbs_parameters: WopbsParameters,
 }
 
@@ -112,6 +118,7 @@ impl<'a> TableQueryRunner<'a> {
         server_key: &'a ServerKey,
         shortint_server_key: &'a ShortintSK,
         wopbs_key: &'a WopbsKey,
+        shortint_wopbs_key: &'a ShortintWopbsKey,
         wopbs_parameters: WopbsParameters,
     ) -> Self {
         Self {
@@ -124,6 +131,7 @@ impl<'a> TableQueryRunner<'a> {
             server_key,
             shortint_server_key,
             wopbs_key,
+            shortint_wopbs_key,
             wopbs_parameters,
         }
     }
@@ -148,21 +156,31 @@ impl<'a> TableQueryRunner<'a> {
     /// multiplications, using the fact that addition is much faster than PBS.
     /// We also use that:
     ///
-    /// $(a \lt b) \text{ XOR } (a = b) \iff a \leq b$.
+    /// ```math
+    /// (a \lt b) \text{ XOR } (a = b) \iff a \leq b
+    /// ```
     ///
     /// # Simplification of the boolean formulas:
     ///
+    /// The encrypted syntax tree, being a binary tree, has the following property:
+    /// + If the tree has `l` leaves, it has `l-1` nodes.
+    ///
+    /// The `EncryptedSyntaxTree` is a list of `EncryptedInstruction`s, where we assume that:
+    /// * the first `l` instructions encode the leaves (ie "atoms"),
+    /// * the rest encode the nodes.
+    ///
     /// We first write:
     /// ```
-    /// result_bool:
-    ///   | if is_node: node_bool XOR negate
-    ///   | else:       atom_bool XOR negate
-    /// node_bool:
-    ///   | if which_op: node_left OR  node_right
-    ///   | else:        node_left AND node_right
-    /// atom_bool:
-    ///   | if which_op: val_left <= val_right
-    ///   | else:        val_left == val_right
+    /// node_bool = cmux(
+    ///               which_op,
+    ///               node_left OR node_right,
+    ///               node_left AND node_right) XOR
+    ///             negate
+    /// atom_bool = cmux(
+    ///               which_op,
+    ///               val_left <= val_right,
+    ///               val_left == val_right) XOR
+    ///             negate
     /// ```
     /// and write the formula for a cmux using `+,*`:
     /// ```
@@ -171,38 +189,40 @@ impl<'a> TableQueryRunner<'a> {
     /// using that `2 * false_case = 0` mod 2.
     /// We thus get:
     /// ```
-    /// result_bool = atom_bool + is_node * (node_bool + atom_bool) + negate
-    /// atom_bool = is_eq + which_op * (is_leq + is_eq)
-    ///           = is_eq + which_op * is_lt
+    /// atom_bool = is_eq + which_op * (is_leq + is_eq) + negate
+    ///           = is_eq + which_op * is_lt + negate
     /// ```
     /// ```
     /// // see crate-level documentation for how we get this formula
-    /// node_bool = (node_left + which_op) * (node_right + which_op) + which_op
+    /// node_bool = (node_left + which_op) * (node_right + which_op) + which_op + negate
     /// ```
     /// Where `is_lt, is_eq, is_leq` are the boolean result of:
     /// 1. `val_left < val_right`
     /// 2. `val_left == val_right`
     /// 3. `val_left <= val_right`
     ///
-    /// Thus only 3 multiplications are required: one for each of the variables
-    /// `atom_bool, node_bool, result_bool`.
-    ///
     /// # Total number of PBS required
-    /// 1. One for retrieving the value associated to an encrypted column identifier,
-    /// 2. Two for evaluating `is_eq` and `is_lt`,
-    /// 3. Two for retrieving `node_left` and `node_right`,
-    /// 4. Three for computing `result_bool`.
+    /// * If an atom is computed:
+    ///   1. One for retrieving the value associated to an encrypted column identifier,
+    ///   2. Two for evaluating `is_eq` and `is_lt`,
+    ///   3. One for the `atom_bool` formula,
+    /// * If a node is computed:
+    ///   1. Two for retrieving `node_left` and `node_right`,
+    ///   2. One for the `node_bool` formula.
     ///
-    /// So a total of 8 PBS for each `EncryptedInstruction`.
-    fn run_query_on_record(
-        &'a self,
-        record: &[u64],
-        query: &'a EncryptedSyntaxTree,
-        // query_lut: &mut QueryLUT,
-    ) -> FheBool {
+    /// Let:
+    /// * $`l`$ be the number of atoms in the input query, and
+    /// * $`n = 2l - 1`$ be its number of instructions.
+    ///
+    /// This method performs:
+    /// ```math
+    /// 4l + 3(l-1) = 7l - 3 = (7n - 13)/2
+    /// ```
+    /// PBS.
+    fn run_query_on_record(&'a self, record: &[u64], query: &'a EncryptedSyntaxTree) -> FheBool {
         let sk = self.server_key;
         let shortint_sk = self.shortint_server_key;
-        let inner_wopbs = self.wopbs_key.clone().into_raw_parts();
+        let inner_wopbs = self.shortint_wopbs_key;
         // if an encrypted where condition has n leaves, then it
         // has n-1 nodes: so a total of 2n-1 elements
         let atom_count = (query.len() + 1) / 2;
@@ -342,8 +362,22 @@ impl<'a> DbQueryRunner<'a> {
         server_key: &'a ServerKey,
         shortint_server_key: &'a ShortintSK,
         wopbs_key: &'a WopbsKey,
+        shortint_wopbs_key: &'a ShortintWopbsKey,
         wopbs_parameters: WopbsParameters,
     ) -> Self {
+        let mut tables: Vec<TableQueryRunner> = Vec::new();
+
+        for (_, t) in &db.tables {
+            tables.push(TableQueryRunner::new(
+                t.clone(),
+                server_key,
+                &shortint_server_key,
+                wopbs_key,
+                &shortint_wopbs_key,
+                wopbs_parameters,
+            ));
+        }
+
         Self {
             server_key,
             tables: db
@@ -353,8 +387,9 @@ impl<'a> DbQueryRunner<'a> {
                     TableQueryRunner::new(
                         t.clone(),
                         server_key,
-                        shortint_server_key,
+                        &shortint_server_key,
                         wopbs_key,
+                        &shortint_wopbs_key,
                         wopbs_parameters,
                     )
                 })

@@ -1,3 +1,6 @@
+//! Defines a lookup table taking (encrypted) `u8` as input, and returning
+//! (encrypted) `u64`s.
+
 use tfhe::shortint::Ciphertext;
 
 use tfhe::integer::wopbs::{IntegerWopbsLUT, WopbsKey};

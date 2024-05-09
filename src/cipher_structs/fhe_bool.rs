@@ -1,3 +1,8 @@
+//! Defines a specialized `FheBool` struct.
+//!
+//! This is done so that `BitXor` is just addition mod 2. Also the degree checks are removed
+//! when performing addition. See [`FheBool::binary_smart_op_optimal_cleaning_strategy`].
+
 use tfhe::shortint::ciphertext::NoiseLevel;
 use tfhe::shortint::{Ciphertext, ServerKey as ShortintSK};
 
@@ -8,7 +13,7 @@ use std::ops::{Add, AddAssign, Mul, Not};
 /// A struct designed to compute the XOR and NOT gates without doing a PBS.
 ///
 /// It essentially uses that `a ^ b = (a + b) % 2`, where booleans are understood
-/// as elements of $\mathbb{Z}/2\mathbb{Z}$:
+/// as elements of $`\mathbb{Z}/2\mathbb{Z}`$:
 /// ```rust
 /// match boolean {
 ///   true  => 1,

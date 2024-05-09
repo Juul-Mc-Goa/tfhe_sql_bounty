@@ -17,4 +17,4 @@ sqlparser=  { version = "*" }
 clap = { version = "4.5.4", features = ["derive"] }
 
 [package.metadata.docs.rs]
-rustdoc-args = [ "--html-in-header", "katex-header.html" ]
+rustdoc-args = [ "--html-in-header", "katex.html" ]

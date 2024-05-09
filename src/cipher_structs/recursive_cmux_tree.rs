@@ -315,8 +315,8 @@ pub fn vertical_packing(
 /// the binary decomposition of `ct`.
 ///
 /// Uses the following fact:
-/// 1. if `lut` is a list of size $2^n$,
-/// 2. if $0 \leq k \leq 2^n$ is an integer with MSB binary decomposition `b:
+/// 1. if `lut` is a list of size $`2^n`$,
+/// 2. if $`0 \leq k \leq 2^n`$ is an integer with MSB binary decomposition `b:
 /// [bool; n]`, and we write `lut[b]` for `lut[k]`,
 ///
 /// then we have:
@@ -327,12 +327,30 @@ pub fn vertical_packing(
 /// - `tail = b[1..]`
 /// - `lut0 = lut[..split_index]`
 /// - `lut1 = lut[split_index..]`
-/// - `split_index` is equal to $2^{n-1}$.
+/// - `split_index` is equal to $`2^{n-1}$`.
 ///
 /// Thus no call to the primitive `blind_rotate_assign` is done.
 ///
 /// This function was written because I couldn't make sense of
 /// [`cmux_tree_memory_optimized`](tfhe::core_crypto::fft_impl::fft64::crypto::wop_pbs::cmux_tree_memory_optimized).
+///
+/// # NOTE
+/// In the formula above describing `lut[b]`, the computation for `lut0[tail]`
+/// and `lut1[tail]` are independent. This means they could be computed in parallel. Such
+/// parallelization would span $`2^n`$ threads, but one could perform parallel computation only
+/// when $`\log_2(n)`$ is smaller than the maximum number of threads.
+///
+/// I'm realizing this 3 days before the deadline so this parallel thing is not implemented.
+///
+/// # NOTE 2
+/// I guess one could adapt `cmux_tree_recursive` to the multibit parameter case
+/// by decomposing $`k`$ in the base $`d`$ used for the (wopbs) key. One would
+/// then replace `cmux(b[0], lut1[tail], lut0[tail])` by:
+///
+/// ```math
+/// \sum_{i=0}^d \text{scalar\_eq}(b\[0\], i) lut[i][tail].
+/// ```
+///
 pub fn cmux_tree_recursive(
     mut output_glwe: GlweCiphertext<&mut [u64]>,
     lut: GlweCiphertextList<&[u64]>,
@@ -482,7 +500,7 @@ pub fn cmux_tree_recursive(
 
 /// For some reason, switching from a [`WopbsKey`] to a
 /// [`FourierLweMultiBitBootstrapKeyOwned`] is not allowed in
-/// [`WopbsKey::keyswitch_to_pbs_params`]. So we code it ourself.
+/// [`WopbsKey::keyswitch_to_pbs_params`]. So we do it ourselves.
 pub fn keyswitch_to_pbs_params(wopbs_key: &WopbsKey, ct_in: &Ciphertext) -> Ciphertext {
     match &wopbs_key.pbs_server_key.bootstrapping_key {
         ShortintBootstrappingKey::Classic(_) => wopbs_key.keyswitch_to_pbs_params(ct_in),

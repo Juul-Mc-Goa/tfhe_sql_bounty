@@ -63,7 +63,7 @@
 //! On the other hand, casting `ShortString` as four `u64` means that conditions
 //! like `some_str = "something"` are cast into
 //! ```
-//! s0 = "<something0>" AND s1 = ... AND s3 = "<something3>"
+//! s0 = <something0> AND s1 = ... AND s3 = <something3>
 //! ```
 //! which means evaluating 7 instructions:
 //! * 1 for each `s0, ..., s3`, and
@@ -227,10 +227,16 @@
 //! We define the boolean `which_op` to encode the choice between `<=` (`true`)
 //! and `=` (`false`). We then use basic logical equivalences to encode `op`
 //! with only two booleans `which_op, negate`:
-//! - $a < b  \iff a \leq b-1$
-//! - $a > b  \iff \neg(a \leq b)$
-//! - $a \not= b \iff \neg(a = b)$
-//! - $a \geq b \iff \neg(a \leq b-1)$
+//! ```math
+//! \left\{
+//!   \begin{array}{lcc}
+//!     a \not= b &\iff &\neg(a = b) \\
+//!     a > b &\iff &\neg (a \leq b) \\
+//!     a < b &\iff &a \leq b-1 \\
+//!     a \geq b &\iff &\neg (a \leq b-1)
+//!   \end{array}
+//! \right.
+//! ```
 //!
 //! We thus encode the pair `(op, value)` as a tuple `(which_op,
 //! negate, encoded_val)` as follows:
@@ -305,17 +311,24 @@
 //! ## Replacing boolean operators with addition and multiplication mod 2
 //! We note the following:
 //! 1. Addition of ciphertexts is much faster than doing a PBS,
-//! 2. Let $a,b \in \mathbb{Z}/2\mathbb{Z}$. Then:
-//!     + $a+1 = \text{NOT } a$,
-//!     + $a+b = a \text{ XOR } b$,
-//!     + $a \times b = a \text{ AND } b$.
+//! 2. Let $`a,b \in \mathbb{Z}/2\mathbb{Z}`$. Then:
+//!   ```math
+//!   \left\{
+//!   \begin{array}{lcl}
+//!     a+1 &= &\text{NOT } a \\
+//!     a+b &= &a \text{ XOR } b \\
+//!     a \times b &= &a \text{ AND } b
+//!   \end{array}
+//!   \right.
+//!   ```
 //!
 //! However, `tfhe::FheBool` uses lookup tables for its implementation of
 //! `BitXor`. So we recreate our own `FheBool` in the `cipher_structs` module.
 //! Then we rewrite:
 //!
-//! $(a \text{ OR } b) \rightarrow (a + b + a \times b)$
-//!
+//! ```math
+//! (a \text{ OR } b) \rightarrow (a + b + a \times b)
+//! ```
 //! and simplify the resulting formulas.
 //! This reduces the number of PBS performed.
 //!
@@ -345,16 +358,20 @@
 //!
 //! One can reduce to only one multiplication using de Morgan's law:
 //!
-//! $ a \text{ OR } b = \neg (\neg a \text{ AND } \neg b),$
+//! ```math
+//! a \text{ OR } b = \neg (\neg a \text{ AND } \neg b),
+//! ```
 //!
 //! which can also be written as:
 //!
-//! $ a + b + ab = (a+1)(b+1) + 1 \thickspace (\text{mod } 2) $
+//! ```math
+//! a + b + ab = (a+1)(b+1) + 1 \thickspace (\text{mod } 2)
+//! ```
 //!
 //! Replacing:
-//! * $a$ by `left`,
-//! * $b$ by`right`,
-//! * $1$ by `which_op`,
+//! * $`a`$ by `left`,
+//! * $`b`$ by`right`,
+//! * $`1`$ by `which_op`,
 //!
 //! we get:
 //! ```rust
@@ -385,6 +402,7 @@ use std::time::Instant;
 
 use tfhe::integer::wopbs::WopbsKey;
 use tfhe::integer::{gen_keys_radix, ClientKey, RadixClientKey, ServerKey};
+use tfhe::shortint::wopbs::WopbsKey as ShortintWopbsKey;
 use tfhe::shortint::{PBSParameters, ServerKey as ShortintSK, WopbsParameters};
 
 mod cipher_structs;
@@ -499,7 +517,7 @@ fn decrypt_result_to_hashmap(
                     let cell_len = cell_type.len();
                     let string_result =
                         decode_cell(cell_type, clear_record[index..(index + cell_len)].to_vec())
-                        .to_string();
+                            .to_string();
                     decoded_result.push(string_result);
                 }
                 SelectItem::Wildcard(_) => {
@@ -570,28 +588,36 @@ fn generate_keys() -> (
     ServerKey,
     ShortintSK,
     WopbsKey,
+    ShortintWopbsKey,
     WopbsParameters,
 ) {
     // KeyGen...
     // (insert Waifu + 8-bit music here)
     let (ck, sk) = gen_keys_radix(default_cpu_parameters(), 16);
-    // we will need access to the underlying shortint server key, which is
-    // a private attribute, and can only be accessed by calling sk.into_raw_parts()
     let shortint_server_key = sk.clone().into_raw_parts();
 
     // WoPBS parameters for the lookup tables
     use tfhe::shortint::parameters::parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     let wopbs_parameters = WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     let wopbs_key = WopbsKey::new_wopbs_key(&ck, &sk, &wopbs_parameters);
+    let shortint_wopbs_key = wopbs_key.clone().into_raw_parts();
 
-    (ck, sk, shortint_server_key, wopbs_key, wopbs_parameters)
+    (
+        ck,
+        sk,
+        shortint_server_key,
+        wopbs_key,
+        shortint_wopbs_key,
+        wopbs_parameters,
+    )
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     println!("KeyGen...");
-    let (client_key, server_key, shortint_server_key, wopbs_key, wopbs_params) = generate_keys();
+    let (client_key, server_key, shortint_server_key, wopbs_key, shortint_wopbs_key, wopbs_params) =
+        generate_keys();
     println!("...done.\n");
 
     // parse cli args
@@ -608,6 +634,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &server_key,
         &shortint_server_key,
         &wopbs_key,
+        &shortint_wopbs_key,
         wopbs_params,
     );
 
@@ -626,10 +653,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         total_time.as_secs(),
         total_time.subsec_millis() / 10
     );
-    let clear_computation_hashmap = db.run_clear_query(query);
+    let clear_computation_result = db.run_clear_query(query);
     println!(
         "Clear DB Result: \n{}\n",
-        result_hashmap_to_string(clear_computation_hashmap.clone())
+        result_hashmap_to_string(clear_computation_result.clone())
     );
     println!(
         "Encrypted DB Result:\n{}\n",
@@ -638,7 +665,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "Results match: {}",
-        fhe_computation_result == clear_computation_hashmap
+        fhe_computation_result == clear_computation_result
     );
 
     Ok(())
