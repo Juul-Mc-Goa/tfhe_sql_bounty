@@ -385,10 +385,8 @@
 //!
 //! <div class="warning">
 //!
-//! This analysis is not complete, because some PBS weren't accounted for:
-//! 1. two PBS are necessary to fetch the values of `left, right`,
-//! 2. one PBS is necessary to process the boolean `is_node`,
-//! 3. some more PBS are needed to handle the `is_node == false` case.
+//! This analysis is not complete, because two additional PBS are necessary to
+//! get the values of `left, right`.
 //!
 //! See at [`run_query_on_record`](TableQueryRunner::run_query_on_record)
 //! for a full analysis.

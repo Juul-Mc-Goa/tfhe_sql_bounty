@@ -11,29 +11,6 @@ use crate::tables::Database;
 use crate::{ComparisonOp, U64Atom, U64SyntaxTree};
 
 impl Database {
-    fn evaluate_condition_on_raw_record(&self, condition: &U64SyntaxTree, record: &[u64]) -> bool {
-        let eval = |cond| self.evaluate_condition_on_raw_record(cond, record);
-        match condition {
-            U64SyntaxTree::False => false,
-            U64SyntaxTree::True => true,
-            U64SyntaxTree::Atom(U64Atom { index, op, value }) => {
-                let (left, right) = (record[*index as usize], *value);
-                match op {
-                    ComparisonOp::LessThan => left < right,
-                    ComparisonOp::LessEqual => left <= right,
-                    ComparisonOp::Equal => left == right,
-                    ComparisonOp::GreaterEqual => left >= right,
-                    ComparisonOp::GreaterThan => left > right,
-                    ComparisonOp::NotEqual => left != right,
-                }
-            }
-            U64SyntaxTree::And(a, b) => eval(a) && eval(b),
-            U64SyntaxTree::Nand(a, b) => !(eval(a) && eval(b)),
-            U64SyntaxTree::Or(a, b) => eval(a) || eval(b),
-            U64SyntaxTree::Nor(a, b) => !(eval(a) || eval(b)),
-        }
-    }
-
     pub fn run_clear_query(&self, query: ClearQuery) -> HashMap<String, u32> {
         let ClearQuery {
             distinct,
@@ -52,7 +29,7 @@ impl Database {
                 .iter()
                 .flat_map(|cell| cell.encode())
                 .collect::<Vec<u64>>();
-            if self.evaluate_condition_on_raw_record(&where_condition, &encoded_record) {
+            if evaluate_condition_on_raw_record(&where_condition, &encoded_record) {
                 let mut key: Vec<String> = Vec::new();
 
                 for s in &sql_projection {
@@ -91,5 +68,28 @@ impl Database {
         }
 
         result
+    }
+}
+
+fn evaluate_condition_on_raw_record(condition: &U64SyntaxTree, record: &[u64]) -> bool {
+    let eval = |cond| evaluate_condition_on_raw_record(cond, record);
+    match condition {
+        U64SyntaxTree::False => false,
+        U64SyntaxTree::True => true,
+        U64SyntaxTree::Atom(U64Atom { index, op, value }) => {
+            let (left, right) = (record[*index as usize], *value);
+            match op {
+                ComparisonOp::LessThan => left < right,
+                ComparisonOp::LessEqual => left <= right,
+                ComparisonOp::Equal => left == right,
+                ComparisonOp::GreaterEqual => left >= right,
+                ComparisonOp::GreaterThan => left > right,
+                ComparisonOp::NotEqual => left != right,
+            }
+        }
+        U64SyntaxTree::And(a, b) => eval(a) && eval(b),
+        U64SyntaxTree::Nand(a, b) => !(eval(a) && eval(b)),
+        U64SyntaxTree::Or(a, b) => eval(a) || eval(b),
+        U64SyntaxTree::Nor(a, b) => !(eval(a) || eval(b)),
     }
 }

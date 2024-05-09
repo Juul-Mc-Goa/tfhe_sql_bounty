@@ -104,7 +104,7 @@ impl<'a> QueryLUT<'a> {
         let index = index as usize;
         let mut lut_at_index = self.lut.get_mut(index);
 
-        update_glwe_with_fhe_bool(&mut lut_at_index, &value, &self.wopbs_key);
+        update_glwe_with_fhe_bool(&mut lut_at_index, value, self.wopbs_key);
     }
 
     /// Inner function called when performing table lookup. Copy-pasted from

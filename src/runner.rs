@@ -227,13 +227,9 @@ impl<'a> TableQueryRunner<'a> {
         // has n-1 nodes: so a total of 2n-1 elements
         let atom_count = (query.len() + 1) / 2;
 
-        let record_lut = RecordLUT::new(record, sk, self.wopbs_key, &inner_wopbs);
-        let mut query_lut: QueryLUT<'_> = QueryLUT::new(
-            query.len(),
-            shortint_sk,
-            &inner_wopbs,
-            self.wopbs_parameters,
-        );
+        let record_lut = RecordLUT::new(record, sk, self.wopbs_key, inner_wopbs);
+        let mut query_lut: QueryLUT<'_> =
+            QueryLUT::new(query.len(), shortint_sk, inner_wopbs, self.wopbs_parameters);
 
         let new_fhe_bool = |ct: Ciphertext| FheBool {
             ct,
@@ -273,7 +269,7 @@ impl<'a> TableQueryRunner<'a> {
 
                 let atom_bool = is_eq + &which_op * is_lt + negate;
 
-                update_glwe_with_fhe_bool(&mut lut_value, &atom_bool, &inner_wopbs);
+                update_glwe_with_fhe_bool(&mut lut_value, &atom_bool, inner_wopbs);
             });
 
         // if there are no nodes, return the last atom
@@ -282,7 +278,7 @@ impl<'a> TableQueryRunner<'a> {
                 &self
                     .server_key
                     .create_trivial_radix::<u64, RadixCiphertext>((atom_count - 1) as u64, 4),
-                &self.shortint_server_key,
+                self.shortint_server_key,
             );
         }
 
@@ -371,9 +367,9 @@ impl<'a> DbQueryRunner<'a> {
             tables.push(TableQueryRunner::new(
                 t.clone(),
                 server_key,
-                &shortint_server_key,
+                shortint_server_key,
                 wopbs_key,
-                &shortint_wopbs_key,
+                shortint_wopbs_key,
                 wopbs_parameters,
             ));
         }
@@ -387,9 +383,9 @@ impl<'a> DbQueryRunner<'a> {
                     TableQueryRunner::new(
                         t.clone(),
                         server_key,
-                        &shortint_server_key,
+                        shortint_server_key,
                         wopbs_key,
-                        &shortint_wopbs_key,
+                        shortint_wopbs_key,
                         wopbs_parameters,
                     )
                 })
