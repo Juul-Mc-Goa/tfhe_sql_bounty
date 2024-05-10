@@ -60,6 +60,24 @@ fn are_not_equal(
     move |egraph, eclass, subst| !condition_eq.check(egraph, eclass, subst)
 }
 
+/// Checks if `var1 <= var2`.
+fn left_leq_right(
+    var1: &'static str,
+    var2: &'static str,
+) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
+    let min = format!("(min {var1} {var2})");
+    let condition_eq = ConditionEqual::parse(var1, &min);
+    move |egraph, eclass, subst| condition_eq.check(egraph, eclass, subst)
+}
+
+/// Checks if `var1 > var2`.
+fn left_gt_right(
+    var1: &'static str,
+    var2: &'static str,
+) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
+    move |egraph, eclass, subst| !left_leq_right(var1, var2)(egraph, eclass, subst)
+}
+
 /// Returns a vector containing all the rewrite rules for `QueryLanguage`.
 pub fn rules() -> Vec<Rewrite> {
     let mut rules: Vec<Rewrite> = vec![];
@@ -91,15 +109,20 @@ pub fn rules() -> Vec<Rewrite> {
     rules.append(&mut rw!("de-morgan"; "(NOT (AND ?x ?y))" <=> "(OR (NOT ?x) (NOT ?y))"));
     rules.push(rw!("trivial-and-or"; "(AND ?x (OR ?x ?y))" => "?x"));
     rules.push(rw!("trivial-or-and"; "(OR ?x (AND ?x ?y))" => "?x"));
-
+    // atom rules
     rules.push(
         rw!("exclusive-eq"; "(AND (= ?x ?y) (= ?x ?z))" => "false" if are_not_equal("?y", "?z")),
     );
-    rules.append(&mut rw!("lt-leq-pred"; "(<= ?x (pred ?y))" <=> "(< ?x ?y)" if is_not_zero("?y")));
-    rules.append(&mut rw!("leq-lt-eq"; "(<= ?x ?y)" <=> "(OR (= ?x ?y) (< ?x ?y))"));
+    rules.append(&mut rw!("leq-pred-lt"; "(<= ?x (pred ?y))" <=> "(< ?x ?y)" if is_not_zero("?y")));
+    rules.append(&mut rw!("leq-lt-or-eq"; "(<= ?x ?y)" <=> "(OR (= ?x ?y) (< ?x ?y))"));
     rules.append(&mut rw!("neq-lt-or-gt"; "(NOT (= ?x ?y))" <=> "(OR (< ?x ?y) (NOT (<= ?x ?y)))"));
-    rules.append(&mut rw!("leq-and"; "(AND (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (min ?y ?z))"));
-    rules.append(&mut rw!("leq-or"; "(OR (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (max ?y ?z))"));
+    rules.append(&mut rw!("leq-and-leq"; "(AND (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (min ?y ?z))"));
+    rules.append(&mut rw!("leq-or-leq"; "(OR (<= ?x ?y) (<= ?x ?z))" <=> "(<= ?x (max ?y ?z))"));
+    rules.push(rw!("leq-and-eq"; "(AND (<= ?x ?y) (= ?x ?z))" => "(= ?x ?z)" if left_leq_right("?z", "?y")));
+    rules.push(
+        rw!("leq-or-eq"; "(OR (<= ?x ?y) (= ?x ?z))" => "(<= ?x ?y)" if left_leq_right("?z", "?y")),
+    );
+    rules.push(rw!("leq-and-eq-false"; "(AND (<= ?x ?y) (= ?x ?z))" => "false" if left_gt_right("?z", "?y")));
     rules.push(rw!("bound-left"; "(< ?x 0)" => "false"));
     rules.push(rw!("bound-right"; "(<= ?x 18446744073709551615)" => "true")); // hardcoding u64::MAX
 
