@@ -29,8 +29,8 @@ transforms binary operators like `<, =, >=, !=` into formulas where only
 the two operators `=, <=` are used. See [Encoding `op`](#encoding-op) for more.
 4. The output vector is then encrypted and sent to the server.
 5. When receiving the response from the server, the client decrypts only the
-necessary entries and columns based on the two attributes
-`encrypted_result.is_entry_in_result` and `encrypted_result.projection`.  Then
+necessary records and columns based on the two attributes
+`encrypted_result.is_record_in_result` and `encrypted_result.projection`.  Then
 the initial (clear) query sent to the server is used to rearrange the columns as
 requested by the query. See `decrypt_result_to_hashmap`.
 
@@ -41,11 +41,11 @@ A provided database is handled as a structure `Database`, which is a list of
 1. runs the encrypted query on the table, ignoring the optional `DISTINCT` flag,
 2. post-process the result to make it compliant with that flag.
 
-This two-step process allows for parallel computation of each table entry at
+This two-step process allows for parallel computation of each table record at
 step 1.  Step 2 is mainly a cmux tree of depth equals to the number of
 columns: the only other operations done during this step are computing sums
 of ciphertexts, which should not be too expensive (in terms of cpu load).
-See the docs for `TableQueryRunner::is_entry_already_in_result`.
+See the docs for `TableQueryRunner::is_record_already_in_result`.
 
 After each `TableQueryRunner` finished its computations, the result of which
 is roughly stored as a `Vec<Vec<RadixCipherText>>`, they are combined into
@@ -133,7 +133,7 @@ and to convert it back to the initial type.
 Primitives for encoding different types to `u64`, or `[u64; 4]`.
 
 ### `tables`
-Handles the representation of tables, entries, and cells.
+Handles the representation of tables, records, and cells.
 
 ### `runner`
 Provides the `TableQueryRunner` and `DbQueryRunner` types for running
@@ -146,7 +146,7 @@ Implements methods for handling the `DISTINCT` flag.
 Contains the definition of a few structures handling encrypted data.
 Here are the structures defined there:
 
-#### `EntryLUT`
+#### `RecordLUT`
 A lookup table for handling FHE computations of functions `u8 -> u64`.
 
 #### `FheBool`
@@ -283,10 +283,10 @@ The first `RadixCiphertext` has 4 blocks, while the second has 32.
 # Evaluating an encrypted syntax tree
 ## Hidden lookup tables
 When performing a SQL query homomorphically, we run the encrypted query on
-each entry.
+each record.
 
 Let `n` be the length of the encoded query. The
-`TableQueryRunner::run_query_on_entry`
+`TableQueryRunner::run_query_on_record`
 method first creates a vector `query_lut: Vec<Ciphertext>`, of size `n`,
 then write the (encrypted) result of each instruction into it.
 
@@ -372,4 +372,4 @@ which_op * which_op = which_op    (mod 2)
 > 2. one PBS is necessary to process the boolean `is_node`,
 > 3. some more PBS are needed to handle the `is_node == false` case.
 
-See the docs at `run_query_on_entry` for a full analysis.
+See the docs at `run_query_on_record` for a full analysis.

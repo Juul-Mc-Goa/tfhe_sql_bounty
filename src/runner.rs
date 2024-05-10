@@ -14,7 +14,12 @@ use crate::{Database, Table, TableHeaders};
 use crate::{EncryptedQuery, EncryptedSyntaxTree};
 
 /// Holds the result of a SQL query.
-pub struct EncryptedResult<'a> {
+///
+/// This is not the final result: as it holds references to `ServerKey`s, it
+/// cannot be used inside the function `run_fhe_query` (the lifetime logic does
+/// not allow it).  The [`EncryptedResult`] struct is defined for that purpose,
+/// and removes all references so `ServerKey`s.
+pub struct TempEncryptedResult<'a> {
     /// Contains one encrypted boolean for each record.
     pub is_record_in_result: Vec<Ciphertext>,
     /// Contains one encrypted boolean for each column.
@@ -27,7 +32,34 @@ pub struct EncryptedResult<'a> {
     pub shortint_server_key: &'a ShortintSK,
 }
 
-impl<'a> EncryptedResult<'a> {
+/// Holds the final result of a SQL query.
+pub struct EncryptedResult {
+    /// Contains one encrypted boolean for each record.
+    pub is_record_in_result: Vec<Ciphertext>,
+    /// Contains one encrypted boolean for each column.
+    pub projection: Vec<Ciphertext>,
+    /// Contains one encrypted `u64` for each cell.
+    pub content: Vec<Vec<RadixCiphertext>>,
+}
+
+impl From<TempEncryptedResult<'_>> for EncryptedResult {
+    fn from(result: TempEncryptedResult) -> Self {
+        let TempEncryptedResult {
+            is_record_in_result,
+            projection,
+            content,
+            ..
+        } = result;
+
+        Self {
+            is_record_in_result,
+            projection,
+            content,
+        }
+    }
+}
+
+impl<'a> TempEncryptedResult<'a> {
     /// Resize an `EncryptedResult` to a given `length` and `width`.
     pub fn resize(&mut self, length: u8, width: u8) {
         let (length, width) = (length as usize, width as usize);
@@ -67,7 +99,7 @@ impl<'a> EncryptedResult<'a> {
     /// Add two `EncryptedResult`s, the result is stored in the first one.
     ///
     /// Used to `XOR` two results.
-    pub fn add_assign(&mut self, other: &EncryptedResult) {
+    pub fn add_assign(&mut self, other: &TempEncryptedResult) {
         assert_eq!(
             self.is_record_in_result.len(),
             other.is_record_in_result.len()
@@ -101,7 +133,7 @@ impl<'a> EncryptedResult<'a> {
 /// An encoded representation of a SQL table, plus a bunch of server keys used
 /// during computations.
 ///
-/// Each record is stored as a `Vec<u64>`. A table is a vector of entries.
+/// Each record is stored as a `Vec<u64>`. A table is a vector of records.
 pub struct TableQueryRunner<'a> {
     pub headers: TableHeaders,
     pub content: Vec<Vec<u64>>,
@@ -139,12 +171,13 @@ impl<'a> TableQueryRunner<'a> {
     /// Runs an encrypted query on a given record.
     ///
     /// # Inputs
-    /// - `record: &Vec<u64>` an encoded record,
-    /// - `query: &EncryptedSyntaxTree` an encrypted `SELECT` query,
-    /// - `query_lut: &mut QueryLUT` an updatable, hidden lookup table.
+    /// + `record: &Vec<u64>` an encoded record,
+    /// + `query: &EncryptedSyntaxTree` an encrypted `SELECT` query,
+    /// + `query_lut: &mut QueryLUT` an updatable, hidden lookup table.
+    ///
     /// # Output
-    /// A `Ciphertext` encrypting a boolean that answers the question: "Is this
-    /// record selected by the query?"
+    /// + A `Ciphertext` encrypting a boolean that answers the question: "Is
+    /// this record selected by the query?"
     ///
     /// The encrypted boolean is actually an integer modulo 2, so that:
     /// - `a AND b` becomes `a*b`,
@@ -216,7 +249,10 @@ impl<'a> TableQueryRunner<'a> {
     ///
     /// This method performs:
     /// ```math
-    /// 4l + 3(l-1) = 7l - 3 = (7n - 13)/2
+    /// \begin{split}
+    /// 4l + 3(l-1) &= 7l - 3 \\
+    ///             &= \frac{7n - 13}{2}
+    /// \end{split}
     /// ```
     /// PBS.
     fn run_query_on_record(&'a self, record: &[u64], query: &'a EncryptedSyntaxTree) -> FheBool {
@@ -303,7 +339,7 @@ impl<'a> TableQueryRunner<'a> {
     /// For each table record, computes (in parallel) if it is present in the
     /// result, ignoring the optional `DISTINCT` flag. Then process the result
     /// to comply with that flag.
-    pub fn run_query(&'a self, query: &'a EncryptedQuery) -> EncryptedResult {
+    pub fn run_query(&'a self, query: &'a EncryptedQuery) -> TempEncryptedResult<'a> {
         let projection = query
             .projection
             .clone()
@@ -334,7 +370,7 @@ impl<'a> TableQueryRunner<'a> {
             })
             .collect();
 
-        EncryptedResult {
+        TempEncryptedResult {
             is_record_in_result: bool_result,
             projection,
             content,
@@ -420,14 +456,15 @@ impl<'a> DbQueryRunner<'a> {
     /// `EncryptedResult`.
     ///
     /// # Input
-    /// An [`EncryptedQuery`].
+    /// + `query`: an [`EncryptedQuery`].
+    ///
     /// # Output
-    /// an `EncryptedResult`, encrypting a table of length/width equals to the
+    /// + an `EncryptedResult`, encrypting a table of length/width equals to the
     /// max length/width of the tables.
     pub fn run_query(&'a self, query: &'a EncryptedQuery) -> EncryptedResult {
         if self.tables.len() == 1 {
             // avoid multiplying the result by a Ciphertext when unnecessary
-            self.tables[0].run_query(query)
+            self.tables[0].run_query(query).into()
         } else {
             // run the query on every table, multiply the encrypted by 0 if it's not
             // the correct table
@@ -451,15 +488,15 @@ impl<'a> DbQueryRunner<'a> {
 
                     result
                 })
-                .collect::<Vec<EncryptedResult>>();
+                .collect::<Vec<TempEncryptedResult>>();
 
             // then sum each table
-            let mut acc: EncryptedResult = result_vec.swap_remove(0);
+            let mut acc: TempEncryptedResult = result_vec.swap_remove(0);
             for table in result_vec {
                 acc.add_assign(&table)
             }
 
-            acc
+            acc.into()
         }
     }
 }

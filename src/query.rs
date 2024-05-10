@@ -676,7 +676,7 @@ pub fn parse_query(query: sqlparser::ast::Select, headers: &DatabaseHeaders) -> 
 /// + `headers`: a [`DatabaseHeaders`], ie a list of all table headers of a database.
 ///
 /// # Output
-/// A [`ClearQuery`].
+/// + A [`ClearQuery`].
 pub fn parse_query_from_file(path: PathBuf, headers: &DatabaseHeaders) -> ClearQuery {
     let dialect = GenericDialect {};
     let str_query = read_to_string(path.clone()).unwrap_or_else(|_| {

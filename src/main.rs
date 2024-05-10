@@ -1,5 +1,20 @@
 //! Computes encrypted queries homomorphically.
 //!
+//! <div class="warning">
+//!
+//! The functions signatures of this project differ from those described
+//! [here](https://github.com/zama-ai/bounty-and-grant-program/issues/94).
+//! This is for basically three reasons:
+//! 1. the DB headers allow to simplify encrypting the query (see [this
+//!    comment](https://github.com/zama-ai/bounty-and-grant-program/issues/94#issuecomment-1964333986)),
+//! 2. the clear query allows to [simplify decrypting the
+//!    result](https://github.com/zama-ai/bounty-and-grant-program/issues/94#issuecomment-2085539241)
+//! 3. some internal parameters for `WopbsKey` and `ServerKey` are private (or can
+//!    only be accessed by consuming the variables), so they are accessed once,
+//!    then forwarded to other parts of the code that need them.
+//!
+//! </div>
+//!
 //! # Main logic
 //!
 //! ## Client
@@ -15,7 +30,7 @@
 //! two operators `=, <=` are used. See [Encoding `op`](#encoding-op) for more.
 //! 4. The output vector is then encrypted and sent to the server.
 //! 5. When receiving the response from the server, the client decrypts only the
-//! necessary entries and columns based on the two attributes
+//! necessary records and columns based on the two attributes
 //! `encrypted_result.is_record_in_result` and `encrypted_result.projection`.
 //! Then the initial (clear) query sent to the server is used to rearrange the
 //! columns as requested by the query. See [`decrypt_result_to_hashmap`].
@@ -133,7 +148,7 @@
 //! Primitives for encoding different types to `u64`, or `[u64; 4]`.
 //!
 //! ### [`tables`]
-//! Handles the representation of tables, entries, and cells.
+//! Handles the representation of tables, records, and cells.
 //!
 //! ### [`runner`]
 //! Provides the [`TableQueryRunner`] and [`DbQueryRunner`] types for running
@@ -365,7 +380,7 @@
 //! which can also be written as:
 //!
 //! ```math
-//! a + b + ab = (a+1)(b+1) + 1 \thickspace (\text{mod } 2)
+//! a + b + ab = (a+1)(b+1) + 1 \quad (\text{mod } 2)
 //! ```
 //!
 //! Replacing:
@@ -415,10 +430,8 @@ mod tables;
 use cipher_structs::FheBool;
 use encoding::{decode_cell, decode_record};
 use query::*;
-use runner::{EncryptedResult, TableQueryRunner};
-use tables::*;
-
-use crate::runner::DbQueryRunner;
+use runner::{DbQueryRunner, EncryptedResult, TableQueryRunner};
+use tables::{Database as Tables, *};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -438,6 +451,9 @@ struct Cli {
 /// + a `client_key`,
 /// + a `shortint_sk` for initializing some (custom) [`FheBool`]s,
 /// + a `headers` struct for turning column identifiers into indices.
+///
+/// # Output
+/// + An [`EncryptedQuery`].
 #[allow(dead_code)]
 fn encrypt_query<'a>(
     query: sqlparser::ast::Select,
@@ -448,19 +464,51 @@ fn encrypt_query<'a>(
     query::parse_query(query, headers).encrypt(client_key, shortint_sk)
 }
 
+/// Runs an encrypted SQL query on a clear database.
+///
 /// # Inputs:
-/// - sks: The server key to use
-/// - input: your EncryptedQuery
-/// - tables: the plain data you run the query on
+/// + `sks`: The server key to use
+/// + `wopbs_key`: the WoPBS key to use
+/// + `wopbs_parameters`: the parameters used for generating `wopbs_key`
+/// + `input`: your EncryptedQuery
+/// + `tables`: the plain data you run the query on
 ///
 /// # Output
-/// - EncryptedResult
-// fn run_fhe_query(
-//     sks: &tfhe::integer::ServerKey,
-//     input: &EncryptedQuery,
-//     data: &Tables,
-// ) -> EncryptedResult;
+/// + EncryptedResult
+#[allow(dead_code)]
+fn run_fhe_query<'a>(
+    sks: &'a ServerKey,
+    wopbs_key: &'a WopbsKey,
+    wopbs_parameters: WopbsParameters,
+    input: &'a EncryptedQuery,
+    data: &'a Tables,
+) -> EncryptedResult {
+    let shortint_server_key = sks.clone().into_raw_parts();
+    let shortint_wopbs_key = wopbs_key.clone().into_raw_parts();
 
+    let query_runner = DbQueryRunner::new(
+        data,
+        sks,
+        &shortint_server_key,
+        wopbs_key,
+        &shortint_wopbs_key,
+        wopbs_parameters,
+    );
+
+    query_runner.run_query(input)
+}
+
+/// Decrypts an [`EncryptedResult`], and turn it into a hashmap.
+///
+/// # Inputs
+/// + a `ClientKey` for decryption,
+/// + an `EncryptedResult` holding the server result,
+/// + `DatabaseHeaders` and a `ClearQuery` for rearranging the columns to match the query
+///
+/// # Ouputs
+/// A hashmap with the following content:
+/// + as keys: a single line of the SQL output, of type `String`
+/// + as values: the number of times this line appears in the SQL output.
 fn decrypt_result_to_hashmap(
     client_key: &RadixClientKey,
     result: &EncryptedResult,
@@ -542,6 +590,9 @@ fn decrypt_result_to_hashmap(
     hashmap
 }
 
+/// Turns a `HashMap<String, u32>` into a `String`.
+///
+/// For each `key`, concatenates it `hashmap[key]` times, then concatenates all results.
 fn result_hashmap_to_string(h: HashMap<String, u32>) -> String {
     let mut result_vec: Vec<String> = Vec::new();
     for (k, v) in h.iter() {
@@ -551,7 +602,7 @@ fn result_hashmap_to_string(h: HashMap<String, u32>) -> String {
     result_vec.join("\n")
 }
 
-/// The output of this function is a string using the CSV format.
+/// Decrypts an [`EncryptedResult`] into a `String` in the CSV format.
 #[allow(dead_code)]
 fn decrypt_result(
     client_key: &RadixClientKey,
@@ -564,6 +615,7 @@ fn decrypt_result(
     ))
 }
 
+/// Generates the parameters used for FHE.
 #[allow(dead_code)]
 fn default_cpu_parameters() -> PBSParameters {
     // uncomment the one you want to use

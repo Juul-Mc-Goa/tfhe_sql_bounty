@@ -37,13 +37,13 @@ impl<'a> TableQueryRunner<'a> {
         projection: Vec<bool>,
         result: &[FheBool<'a>],
     ) -> FheBool<'a> {
-        self.find_same_projection(index, projection)
-            .into_iter()
-            .map(|i| &result[i as usize])
-            .fold(
-                FheBool::encrypt_trivial(false, self.shortint_server_key),
-                move |a, b| &a + b,
-            )
+        let mut result_bool = FheBool::encrypt_trivial(false, self.shortint_server_key);
+
+        for i in self.find_same_projection(index, projection) {
+            result_bool += &result[i as usize]
+        }
+
+        result_bool
     }
 
     /// An internal, recursive method to do what

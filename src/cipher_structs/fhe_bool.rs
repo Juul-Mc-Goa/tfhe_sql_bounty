@@ -256,8 +256,7 @@ mod tests {
 
     #[test]
     fn add_two_fhe_bool() {
-        let (ck, sk, _shortint_sk, _wopbs_key, _wopbs_params) = generate_keys();
-        let inner_sk = sk.clone().into_raw_parts();
+        let (ck, _, inner_sk, _, _, _) = generate_keys();
         let b1 = FheBool::encrypt(true, &ck, &inner_sk);
         let b2 = FheBool::encrypt(true, &ck, &inner_sk);
 
@@ -268,8 +267,7 @@ mod tests {
 
     #[test]
     fn mul_two_fhe_bool() {
-        let (ck, sk, _shortint_sk, _wopbs_key, _wopbs_params) = generate_keys();
-        let inner_sk = sk.clone().into_raw_parts();
+        let (ck, _, inner_sk, _, _, _) = generate_keys();
         let b1 = FheBool::encrypt(true, &ck, &inner_sk);
         let b2 = FheBool::encrypt(true, &ck, &inner_sk);
 
@@ -280,8 +278,7 @@ mod tests {
 
     #[test]
     fn mix_two_fhe_bool() {
-        let (ck, sk, _shortint_sk, _wopbs_key, _wopbs_params) = generate_keys();
-        let inner_sk = sk.clone().into_raw_parts();
+        let (ck, _, inner_sk, _, _, _) = generate_keys();
         let b1 = FheBool::encrypt(true, &ck, &inner_sk);
         let b2 = FheBool::encrypt(true, &ck, &inner_sk);
 
