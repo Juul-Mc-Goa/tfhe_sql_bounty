@@ -354,21 +354,7 @@ impl U64SyntaxTree {
         Self::from_string(index, op, value)
     }
 
-    /// Returns its index in the `Vec<EncodedInstruction>` after calling
-    /// `Self::encode`.
-    ///
-    /// A node is encoded after its children, so that `self.index(base_index) =
-    /// base_index + (size of the subtree rooted at self)`
-    #[allow(dead_code)]
-    fn index(&self, base_index: u8) -> u8 {
-        match self {
-            Self::Atom(_) | Self::True | Self::False => base_index,
-            Self::And(a, b) | Self::Nand(a, b) | Self::Or(a, b) | Self::Nor(a, b) => {
-                b.index(a.index(base_index) + 1) + 1
-            }
-        }
-    }
-
+    /// Counts the number of atoms in the tree rooted at `self`.
     fn atom_count(&self) -> u8 {
         match self {
             Self::Atom(_) | Self::True | Self::False => 1,
@@ -426,31 +412,6 @@ impl U64SyntaxTree {
             Self::Or(a, b) => add_node(a, b, true, false),
             Self::Nor(a, b) => add_node(a, b, true, true),
         }
-    }
-
-    /// Encodes itself into a `Vec<EncodedInstruction64>`.
-    #[allow(dead_code)]
-    pub fn encode_with_index(&self, base_index: u8) -> Vec<EncodedInstruction> {
-        let mut result: Vec<EncodedInstruction> = Vec::new();
-
-        let mut add_node = |a: &Self, b: &Self, which_op: bool, negate: bool| {
-            result.append(&mut a.encode_with_index(base_index));
-            let a_index = a.index(base_index);
-            let b_index = b.index(a_index + 1);
-            result.append(&mut b.encode_with_index(a_index + 1));
-            result.push((true, a_index, which_op, (b_index as u64), negate));
-        };
-        match self {
-            // HACK: False <=> query_lut.get(current_index) AND query_lut.get(current_index) == true
-            Self::False => result.push((true, base_index, false, base_index as u64, false)),
-            Self::True => (), // True <=> no instruction
-            Self::Atom(a) => result.push(a.encode()),
-            Self::And(a, b) => add_node(a, b, false, false),
-            Self::Nand(a, b) => add_node(a, b, false, true),
-            Self::Or(a, b) => add_node(a, b, true, false),
-            Self::Nor(a, b) => add_node(a, b, true, true),
-        }
-        result
     }
 
     /// Encodes itself into a `Vec<EncodedInstruction64>`.
