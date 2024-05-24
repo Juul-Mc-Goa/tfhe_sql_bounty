@@ -141,6 +141,12 @@ impl<'a> TableQueryRunner<'a> {
         projection: &[FheBool<'a>],
         result: &[FheBool<'a>],
     ) -> Vec<FheBool<'a>> {
+        // if there is a mismatch in the number of columns, then it means
+        // the query selects a different table, so return a trivial result.
+        if self.headers.len() != projection.len() {
+            return result.to_vec();
+        }
+
         let n = result.len();
         let mut compliant_result =
             vec![FheBool::encrypt_trivial(false, self.shortint_server_key); n];

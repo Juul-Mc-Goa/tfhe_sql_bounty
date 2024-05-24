@@ -43,7 +43,6 @@ impl Database {
                                 .expect("Column identifier {ident} does not exist")
                                 as usize;
                             let cell_type = table.headers.type_of(ident.clone()).unwrap();
-                            // key.push(record[index].to_string())
                             key.push(
                                 decode_cell(cell_type, encoded_record[index..].to_vec())
                                     .to_string(),
