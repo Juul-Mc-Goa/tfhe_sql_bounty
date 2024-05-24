@@ -38,9 +38,11 @@ impl From<&str> for CellType {
             "uint8" => Self::U8,
             "uint16" => Self::U16,
             "uint32" => Self::U32,
+            "uint64" => Self::U64,
             "int8" => Self::I8,
             "int16" => Self::I16,
             "int32" => Self::I32,
+            "int64" => Self::I64,
             "string" => Self::ShortString,
             _ => panic!("Unknown data type: {str_type}"),
         }

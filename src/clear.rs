@@ -6,6 +6,7 @@
 use sqlparser::ast::{Expr, SelectItem};
 use std::collections::HashMap;
 
+use crate::encoding::decode_cell;
 use crate::query::ClearQuery;
 use crate::tables::Database;
 use crate::{ComparisonOp, U64Atom, U64SyntaxTree};
@@ -41,14 +42,19 @@ impl Database {
                                 .index_of(ident.clone())
                                 .expect("Column identifier {ident} does not exist")
                                 as usize;
-                            key.push(record[index].to_string())
+                            let cell_type = table.headers.type_of(ident.clone()).unwrap();
+                            // key.push(record[index].to_string())
+                            key.push(
+                                decode_cell(cell_type, encoded_record[index..].to_vec())
+                                    .to_string(),
+                            )
                         }
                         SelectItem::Wildcard(_) => {
                             key = vec![record
-                                       .iter()
-                                       .map(|cell| cell.to_string())
-                                       .collect::<Vec<String>>()
-                                       .join(",")];
+                                .iter()
+                                .map(|cell| cell.to_string())
+                                .collect::<Vec<String>>()
+                                .join(",")];
                             break;
                         }
                         s => panic!("Unsupported SelectItem: {s:?}"),

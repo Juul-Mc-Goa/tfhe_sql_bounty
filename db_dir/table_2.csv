@@ -1,4 +1,0 @@
-age:int8,thinks_is_jesus:bool,first_name:string,last_name:string
--5,true,"Elon","Musk"
-40,true,"Emmanuel","Macron"
--37,false,"John","Doe"

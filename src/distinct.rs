@@ -70,6 +70,7 @@ impl<'a> TableQueryRunner<'a> {
 
             let mut first_proj = clear_projection.clone();
             first_proj.append(&mut vec![false; current_len]);
+
             let false_case = self.recursive_cmux_distinct(
                 index,
                 first_proj,
@@ -87,6 +88,7 @@ impl<'a> TableQueryRunner<'a> {
                 &projection[current_len..],
                 result,
             );
+
             // cmux(projection[0], true_case, false_case)
             &false_case + &projection[0] * (true_case + &false_case)
         }

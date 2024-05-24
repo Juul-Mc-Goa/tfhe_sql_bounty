@@ -1,7 +1,1 @@
-SELECT DISTINCT *
-FROM table_1
-WHERE
-((some_int <= 100 OR some_int = 102) AND
-(some_int < 100 OR some_int = 103)) OR
-((some_int <= 102 AND some_int > 100) OR
-(some_int <= 103 AND some_int > 101));
+SELECT NumericVal FROM Test WHERE StrVal='hello'
