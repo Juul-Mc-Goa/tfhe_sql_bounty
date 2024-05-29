@@ -1,7 +1,10 @@
 //! Defines a lookup table taking (encrypted) `u8` as input, and returning
 //! (encrypted) `u64`s.
 
-use tfhe::shortint::Ciphertext;
+use tfhe::core_crypto::commons::parameters::*;
+
+use tfhe::integer::wopbs::{decode_radix, encode_mix_radix, encode_radix};
+use tfhe::shortint::{wopbs::WopbsKey as InnerWopbsKey, Ciphertext};
 
 use tfhe::integer::wopbs::{IntegerWopbsLUT, WopbsKey};
 use tfhe::integer::{IntegerCiphertext, IntegerRadixCiphertext, RadixCiphertext, ServerKey};
@@ -61,17 +64,17 @@ impl<'a> RecordLUT<'a> {
         let f6 = |u: u64| -> u64 { (f(u) >> 48) % 256 };
         let f7 = |u: u64| -> u64 { (f(u) >> 56) % 256 }; //msb
         let lut = (
-            wopbs_key.generate_lut_radix(&max_argument, f0),
-            wopbs_key.generate_lut_radix(&max_argument, f1),
-            wopbs_key.generate_lut_radix(&max_argument, f2),
-            wopbs_key.generate_lut_radix(&max_argument, f3),
-            wopbs_key.generate_lut_radix(&max_argument, f4),
-            wopbs_key.generate_lut_radix(&max_argument, f5),
-            wopbs_key.generate_lut_radix(&max_argument, f6),
-            wopbs_key.generate_lut_radix(&max_argument, f7),
+            Self::generate_lut_radix(&inner_wopbs_key, &max_argument, f0),
+            Self::generate_lut_radix(&inner_wopbs_key, &max_argument, f1),
+            Self::generate_lut_radix(&inner_wopbs_key, &max_argument, f2),
+            Self::generate_lut_radix(&inner_wopbs_key, &max_argument, f3),
+            Self::generate_lut_radix(&inner_wopbs_key, &max_argument, f4),
+            Self::generate_lut_radix(&inner_wopbs_key, &max_argument, f5),
+            Self::generate_lut_radix(&inner_wopbs_key, &max_argument, f6),
+            Self::generate_lut_radix(&inner_wopbs_key, &max_argument, f7),
         );
 
-        Self {
+        RecordLUT {
             lut,
             server_key,
             inner_wopbs_key,
@@ -79,7 +82,53 @@ impl<'a> RecordLUT<'a> {
         }
     }
 
+    /// Copy-pasted from `tfhe::integer::wopbs`. Fixed the computation of `vec_deg_basis`.
+    pub fn generate_lut_radix<F, T>(wopbs_key: &InnerWopbsKey, ct: &T, f: F) -> IntegerWopbsLUT
+    where
+        F: Fn(u64) -> u64,
+        T: IntegerCiphertext,
+    {
+        let mut total_bit = 0;
+        let block_nb = ct.blocks().len();
+        let mut modulus = 1;
+
+        //This contains the basis of each block depending on the degree
+        let mut vec_deg_basis = vec![];
+
+        for (i, _deg) in ct.moduli().iter().zip(ct.blocks().iter()) {
+            modulus *= i;
+            let b = f64::log2(*i as f64).ceil() as u64;
+            vec_deg_basis.push(b);
+            total_bit += b;
+        }
+
+        let lut_size = if 1 << total_bit < wopbs_key.param.polynomial_size.0 as u64 {
+            wopbs_key.param.polynomial_size.0
+        } else {
+            1 << total_bit
+        };
+        let mut lut = IntegerWopbsLUT::new(PlaintextCount(lut_size), CiphertextCount(block_nb));
+
+        let basis = ct.moduli()[0];
+        let delta: u64 = (1 << 63)
+            / (wopbs_key.param.message_modulus.0 * wopbs_key.param.carry_modulus.0) as u64;
+
+        for lut_index_val in 0..(1 << total_bit) {
+            let encoded_with_deg_val = encode_mix_radix(lut_index_val, &vec_deg_basis, basis);
+            let decoded_val = decode_radix(&encoded_with_deg_val, basis);
+            let f_val = f(decoded_val % modulus) % modulus;
+            let encoded_f_val = encode_radix(f_val, basis, block_nb as u64);
+            for (lut_number, radix_encoded_val) in encoded_f_val.iter().enumerate().take(block_nb) {
+                lut[lut_number][lut_index_val as usize] = radix_encoded_val * delta;
+            }
+        }
+        lut
+    }
+
     pub fn apply(&self, index: &RadixCiphertext) -> RadixCiphertext {
+        // let mut safe_index = index.clone();
+        // self.server_key.full_propagate(&mut safe_index);
+
         let ct = self
             .wopbs_key
             .keyswitch_to_wopbs_params(self.server_key, index);
@@ -96,7 +145,8 @@ impl<'a> RecordLUT<'a> {
         let mut result: Vec<tfhe::shortint::Ciphertext> = Vec::new();
 
         let mut extend_result = |ct_result: &RadixCiphertext| {
-            result.extend(self.keyswitch_to_pbs_params(ct_result).into_blocks());
+            let pbs_result = self.keyswitch_to_pbs_params(ct_result);
+            result.extend(pbs_result.into_blocks());
         };
 
         extend_result(&ct_res0);
