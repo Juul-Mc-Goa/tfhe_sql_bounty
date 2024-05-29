@@ -174,6 +174,17 @@ impl U64Atom {
         self.op.negate()
     }
 
+    pub fn apply_unary_op(&mut self, op: UnaryOperator) {
+        self.value = match (op, self.value) {
+            (UnaryOperator::Plus, v) => v,
+            (UnaryOperator::Minus, v) => v ^ (1 << 63),
+            (UnaryOperator::Not, 0) => 1,
+            (UnaryOperator::Not, 1) => 0,
+            (UnaryOperator::Not, v) => v,
+            o => panic!("unsupported unary operator: {o:?}"),
+        }
+    }
+
     /// Creates a `String` representation of an atom for debugging purposes.
     #[allow(clippy::inherent_to_string)]
     fn to_string(&self) -> String {
@@ -275,6 +286,20 @@ impl U64SyntaxTree {
             self.negate()
         } else {
             self
+        }
+    }
+
+    pub fn apply_unary_op(self, op: UnaryOperator) -> Self {
+        match op {
+            UnaryOperator::Not => self.negate(),
+            o => match self {
+                U64SyntaxTree::Atom(a) => {
+                    let mut new_atom = a.clone();
+                    new_atom.apply_unary_op(o);
+                    U64SyntaxTree::Atom(new_atom)
+                }
+                _ => panic!("applied unary operator {o:?} to non-atom"),
+            },
         }
     }
 
@@ -515,6 +540,38 @@ impl From<(Expr, &TableHeaders)> for U64SyntaxTree {
                 {
                     Self::from_ident((i_left, op.to_owned(), i_right), headers)
                 }
+                // handles unary operators
+                (
+                    Expr::Identifier(_),
+                    Expr::UnaryOp {
+                        op: inner_op,
+                        expr: inner_expr,
+                    },
+                ) => match (inner_op, *inner_expr) {
+                    // corner case: avoid overflow when parsing i64::min
+                    (UnaryOperator::Minus, Expr::Value(Value::Number(i, b))) => {
+                        let new_value = "-".to_owned() + &i;
+                        Self::from((
+                            Expr::BinaryOp {
+                                left: left.clone(),
+                                op: op.clone(),
+                                right: Box::new(Expr::Value(Value::Number(new_value, b))),
+                            },
+                            headers,
+                        ))
+                    }
+                    (inner_op, inner_expr) => {
+                        let result = Self::from((
+                            Expr::BinaryOp {
+                                left: left.clone(),
+                                op: op.clone(),
+                                right: Box::new(inner_expr),
+                            },
+                            headers,
+                        ));
+                        result.apply_unary_op(inner_op)
+                    }
+                },
                 // recursively builds a syntax tree from a SQL expression `l OP
                 // r` where OP is one of AND, OR, and l, r are SQL expressions
                 (l, r) => {

@@ -130,7 +130,7 @@ impl CellContent {
 impl From<(&str, &CellType)> for CellContent {
     fn from(arg: (&str, &CellType)) -> Self {
         match arg.1 {
-            CellType::Bool => Self::Bool(bool::from_str(arg.0).unwrap()),
+            CellType::Bool => Self::Bool(bool::from_str(&arg.0.to_lowercase()).unwrap()),
             CellType::U8 => Self::U8(u8::from_str(arg.0).unwrap()),
             CellType::U16 => Self::U16(u16::from_str(arg.0).unwrap()),
             CellType::U32 => Self::U32(u32::from_str(arg.0).unwrap()),
