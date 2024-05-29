@@ -397,19 +397,6 @@ impl<'a> DbQueryRunner<'a> {
         shortint_wopbs_key: &'a ShortintWopbsKey,
         wopbs_parameters: WopbsParameters,
     ) -> Self {
-        let mut tables: Vec<TableQueryRunner> = Vec::new();
-
-        for (_, t) in &db.tables {
-            tables.push(TableQueryRunner::new(
-                t.clone(),
-                server_key,
-                shortint_server_key,
-                wopbs_key,
-                shortint_wopbs_key,
-                wopbs_parameters,
-            ));
-        }
-
         Self {
             server_key,
             tables: db

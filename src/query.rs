@@ -484,6 +484,14 @@ impl From<(Expr, &TableHeaders)> for U64SyntaxTree {
                 expr: e,
             } => Self::from((e.as_ref().to_owned(), headers)).negate(),
             Expr::UnaryOp { op, .. } => panic!("unknown unary operator {op:?}"),
+            Expr::Identifier(ident) => Self::from((
+                Expr::BinaryOp {
+                    left: Box::new(Expr::Identifier(ident)),
+                    op: BinaryOperator::Eq,
+                    right: Box::new(Expr::Value(Value::Boolean(true))),
+                },
+                headers,
+            )),
             Expr::InList {
                 expr,
                 list,
@@ -584,7 +592,7 @@ impl From<(Expr, &TableHeaders)> for U64SyntaxTree {
                     }
                 }
             },
-            _ => todo!(),
+            e => panic!("unsupported expression: {e:?}"),
         }
     }
 }
