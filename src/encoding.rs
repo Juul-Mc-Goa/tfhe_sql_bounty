@@ -70,7 +70,7 @@ where
 /// Converts a vector of `u64`s into a String.
 pub fn decode_u64_string(v: Vec<u64>) -> String {
     let mut vec_u8 = Vec::<u8>::new();
-    for u in v {
+    for u in &v[..4] {
         vec_u8.push(((u >> 56) % 256) as u8);
         vec_u8.push(((u >> 48) % 256) as u8);
         vec_u8.push(((u >> 40) % 256) as u8);

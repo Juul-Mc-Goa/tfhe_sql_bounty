@@ -42,7 +42,7 @@ pub struct QueryLUT<'a> {
 impl<'a> QueryLUT<'a> {
     pub fn new(
         size: usize,
-        inner_server_key: &'a ServerKey,
+        server_key: &'a ServerKey,
         wopbs_key: &'a WopbsKey,
         wopbs_parameters: WopbsParameters,
     ) -> Self {
@@ -60,7 +60,7 @@ impl<'a> QueryLUT<'a> {
 
         Self {
             lut,
-            server_key: inner_server_key,
+            server_key,
             wopbs_key,
         }
     }
