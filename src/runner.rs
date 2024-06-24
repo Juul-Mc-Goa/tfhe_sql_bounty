@@ -274,11 +274,11 @@ impl<'a> TableQueryRunner<'a> {
         let mut result_bool = FheBool::encrypt_trivial(true, shortint_sk);
 
         let is_lt = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
-            new_fhe_bool(sk.lt_parallelized(a, b).into_inner())
+            new_fhe_bool(sk.lt_parallelized(a, b).into_raw_parts())
         };
 
         let is_eq = |a: &RadixCiphertext, b: &RadixCiphertext| -> FheBool {
-            new_fhe_bool(sk.eq_parallelized(a, b).into_inner())
+            new_fhe_bool(sk.eq_parallelized(a, b).into_raw_parts())
         };
 
         // if the query is empty then return true
@@ -463,7 +463,7 @@ impl<'a> DbQueryRunner<'a> {
                     let is_correct_table = self
                         .server_key
                         .scalar_eq_parallelized(&query.table_selection, i as u64)
-                        .into_inner();
+                        .into_raw_parts();
 
                     let mut result = table.run_query(query);
 

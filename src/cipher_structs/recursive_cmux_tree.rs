@@ -18,8 +18,9 @@ use aligned_vec::CACHELINE_ALIGN;
 use dyn_stack::{PodStack, ReborrowMut, SizeOverflow, StackReq};
 
 use tfhe::core_crypto::algorithms::{
-    extract_lwe_sample_from_glwe_ciphertext, keyswitch_lwe_ciphertext,
-    multi_bit_deterministic_programmable_bootstrap_lwe_ciphertext,
+    extract_lwe_sample_from_glwe_ciphertext,
+    keyswitch_lwe_ciphertext,
+    // multi_bit_deterministic_programmable_bootstrap_lwe_ciphertext,
     multi_bit_programmable_bootstrap_lwe_ciphertext,
 };
 use tfhe::core_crypto::commons::parameters::*;
@@ -537,23 +538,31 @@ pub fn keyswitch_to_pbs_params(wopbs_key: &WopbsKey, ct_in: &Ciphertext) -> Ciph
             keyswitch_lwe_ciphertext(ksk, &ct_in.ct, &mut lwe_after_ks);
 
             // perform bootstrap
-            if *deterministic_execution {
-                multi_bit_deterministic_programmable_bootstrap_lwe_ciphertext(
-                    &lwe_after_ks,
-                    &mut ct_out,
-                    &acc.acc,
-                    fourier_bsk,
-                    *thread_count,
-                );
-            } else {
-                multi_bit_programmable_bootstrap_lwe_ciphertext(
-                    &lwe_after_ks,
-                    &mut ct_out,
-                    &acc.acc,
-                    fourier_bsk,
-                    *thread_count,
-                );
-            }
+            multi_bit_programmable_bootstrap_lwe_ciphertext(
+                &lwe_after_ks,
+                &mut ct_out,
+                &acc.acc,
+                fourier_bsk,
+                *thread_count,
+                *deterministic_execution,
+            );
+            // if *deterministic_execution {
+            //     multi_bit_deterministic_programmable_bootstrap_lwe_ciphertext(
+            //         &lwe_after_ks,
+            //         &mut ct_out,
+            //         &acc.acc,
+            //         fourier_bsk,
+            //         *thread_count,
+            //     );
+            // } else {
+            //     multi_bit_programmable_bootstrap_lwe_ciphertext(
+            //         &lwe_after_ks,
+            //         &mut ct_out,
+            //         &acc.acc,
+            //         fourier_bsk,
+            //         *thread_count,
+            //     );
+            // }
 
             Ciphertext::new(
                 ct_out,

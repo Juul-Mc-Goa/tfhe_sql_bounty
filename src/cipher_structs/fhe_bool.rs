@@ -32,7 +32,7 @@ impl<'a> FheBool<'a> {
     /// Encrypts a boolean with the given client key.
     pub fn encrypt(val: bool, client_key: &'a RadixClientKey, server_key: &'a ShortintSK) -> Self {
         Self {
-            ct: client_key.encrypt_bool(val).into_inner(),
+            ct: client_key.encrypt_bool(val).into_raw_parts(),
             server_key,
         }
     }

@@ -355,15 +355,24 @@ impl U64SyntaxTree {
             (CellType::I16, Value::Number(n, _b)) => build_self(parse_signed::<i16>(n)),
             (CellType::I32, Value::Number(n, _b)) => build_self(parse_signed::<i32>(n)),
             (CellType::I64, Value::Number(n, _b)) => build_self(parse_signed::<i64>(n)),
-            (CellType::ShortString, Value::UnQuotedString(s))
-            | (CellType::ShortString, Value::SingleQuotedString(s))
-            | (CellType::ShortString, Value::DoubleQuotedString(s))
-            | (CellType::ShortString, Value::EscapedStringLiteral(s))
-            | (CellType::ShortString, Value::SingleQuotedByteStringLiteral(s))
-            | (CellType::ShortString, Value::DoubleQuotedByteStringLiteral(s))
-            | (CellType::ShortString, Value::RawStringLiteral(s)) => {
-                Self::from_string(index, op, s)
-            }
+            // | (CellType::ShortString, Value::UnQuotedString(s))
+            (CellType::ShortString, Value::SingleQuotedString(s))
+                | (CellType::ShortString, Value::TripleSingleQuotedString(s))
+                | (CellType::ShortString, Value::TripleDoubleQuotedString(s))
+                | (CellType::ShortString, Value::EscapedStringLiteral(s))
+                | (CellType::ShortString, Value::SingleQuotedByteStringLiteral(s))
+                | (CellType::ShortString, Value::DoubleQuotedByteStringLiteral(s))
+                | (CellType::ShortString, Value::TripleSingleQuotedByteStringLiteral(s))
+                | (CellType::ShortString, Value::TripleDoubleQuotedByteStringLiteral(s))
+                | (CellType::ShortString, Value::SingleQuotedRawStringLiteral(s))
+                | (CellType::ShortString, Value::DoubleQuotedRawStringLiteral(s))
+                | (CellType::ShortString, Value::TripleSingleQuotedRawStringLiteral(s))
+                | (CellType::ShortString, Value::TripleDoubleQuotedRawStringLiteral(s))
+                | (CellType::ShortString, Value::NationalStringLiteral(s))
+                | (CellType::ShortString, Value::HexStringLiteral(s))
+                | (CellType::ShortString, Value::DoubleQuotedString(s)) => {
+                    Self::from_string(index, op, s)
+                }
             (c, t) => panic!("Type error: {ident} has type {c:?}, got {t:?}",),
         }
     }
